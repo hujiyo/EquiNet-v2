@@ -26,7 +26,7 @@ from model import create_model
 from data import (
     load_and_preprocess_data,
     create_sampler, sample_with_pools,
-    create_fixed_evaluation_dataset,FeatureNormalizer
+    create_fixed_evaluation_dataset,FeatureNormalizer, GlobalDataManager
 )
 
 from training_utils import (
@@ -89,7 +89,7 @@ def train_clone_model(model_a, train_stock_info, test_stock_info,
         torch.cuda.manual_seed_all(DataConfig.RANDOM_SEED)
 
     # 创建评估数据集
-    eval_inputs, eval_targets, eval_cumulative_returns, eval_day_indices, eval_daily_returns = create_fixed_evaluation_dataset(test_stock_info, feature_normalizer)
+    eval_inputs, eval_targets, eval_cumulative_returns, eval_day_indices, eval_daily_returns, eval_market_seqs = create_fixed_evaluation_dataset(test_stock_info, feature_normalizer)
 
     # 模型B初始化为None
     model_b = None
@@ -231,7 +231,7 @@ def train_clone_model(model_a, train_stock_info, test_stock_info,
                 print()
 
         # 使用时间顺序采样器生成训练数据（与主训练流程统一）
-        epoch_inputs, epoch_targets, epoch_cum_returns = sample_with_pools(
+        epoch_inputs, epoch_targets, epoch_cum_returns, epoch_market_seqs = sample_with_pools(
             sampler, train_stock_info, batch_size, batches_per_epoch, train_rng,
             feature_normalizer
         )
@@ -251,6 +251,7 @@ def train_clone_model(model_a, train_stock_info, test_stock_info,
         epoch_inputs_tensor = torch.tensor(epoch_inputs, dtype=torch.float32).to(device)
         epoch_targets_tensor = torch.tensor(epoch_targets, dtype=torch.float32).to(device)
         epoch_returns_tensor = torch.tensor(epoch_cum_returns, dtype=torch.float32).to(device)
+        epoch_market_tensor = torch.tensor(epoch_market_seqs, dtype=torch.float32).to(device)
 
         # 计算实际可用的batch数量（防止索引越界）
         actual_batches = len(epoch_inputs_tensor) // batch_size
@@ -265,10 +266,11 @@ def train_clone_model(model_a, train_stock_info, test_stock_info,
             batch_inputs = epoch_inputs_tensor[start_idx:end_idx]
             batch_targets = epoch_targets_tensor[start_idx:end_idx]
             batch_returns = epoch_returns_tensor[start_idx:end_idx]
+            batch_market = epoch_market_tensor[start_idx:end_idx] if epoch_market_tensor is not None else None
 
             # ========== 训练模型A ==========
             optimizer_a.zero_grad()
-            output_a = model_a(batch_inputs)
+            output_a = model_a(batch_inputs, batch_market)
             if hasattr(criterion, 'update_weights'):
                 criterion.update_weights(batch_targets)
             if isinstance(criterion, TaskAlignedLoss):
@@ -287,7 +289,7 @@ def train_clone_model(model_a, train_stock_info, test_stock_info,
 
                 # 用【最佳模型A】的预测生成伪标签
                 with torch.no_grad():
-                    output_a_for_pseudo = best_model_a_for_pseudo(batch_inputs)
+                    output_a_for_pseudo = best_model_a_for_pseudo(batch_inputs, batch_market)
                     pred_a_for_pseudo = torch.sigmoid(output_a_for_pseudo).squeeze()
 
                 # 使用统一的伪标签生成函数
@@ -303,7 +305,7 @@ def train_clone_model(model_a, train_stock_info, test_stock_info,
                 total_unchanged += pseudo_stats['unchanged_count']
 
                 # 训练模型B
-                output_b = model_b(batch_inputs)
+                output_b = model_b(batch_inputs, batch_market)
                 if hasattr(criterion, 'update_weights'):
                     criterion.update_weights(pseudo_targets)
                 if isinstance(criterion, TaskAlignedLoss):
@@ -344,7 +346,8 @@ def train_clone_model(model_a, train_stock_info, test_stock_info,
             model_a, eval_inputs, eval_targets, eval_cumulative_returns,
             device, model_name="A",
             eval_day_indices=eval_day_indices,
-            eval_daily_returns=eval_daily_returns
+            eval_daily_returns=eval_daily_returns,
+            market_seqs=eval_market_seqs
         )
 
         # 计算训练集平均损失（除以样本数，与测试损失保持一致）
@@ -353,7 +356,7 @@ def train_clone_model(model_a, train_stock_info, test_stock_info,
         avg_loss_a = total_loss_a / total_samples_a if total_samples_a > 0 else 0
 
         # 计算测试集损失（用于早停检测）
-        test_loss_a = calculate_test_loss(model_a, eval_inputs, eval_targets, eval_criterion, device)
+        test_loss_a = calculate_test_loss(model_a, eval_inputs, eval_targets, eval_criterion, device, market_seqs=eval_market_seqs)
 
         # 打印模型A结果
         print(f'  [模型A] 训练损失: {avg_loss_a:.4f}, 测试损失: {test_loss_a:.4f}, AUC: {stats_a["auc"]:.4f}')
@@ -449,7 +452,8 @@ def train_clone_model(model_a, train_stock_info, test_stock_info,
                 model_b, eval_inputs, eval_targets, eval_cumulative_returns,
                 device, model_name="B",
                 eval_day_indices=eval_day_indices,
-                eval_daily_returns=eval_daily_returns
+                eval_daily_returns=eval_daily_returns,
+                market_seqs=eval_market_seqs
             )
 
             # 计算训练集平均损失（除以样本数，与测试损失保持一致）
@@ -458,7 +462,7 @@ def train_clone_model(model_a, train_stock_info, test_stock_info,
             avg_loss_b = total_loss_b / total_samples_b if total_samples_b > 0 else 0
 
             # 计算测试集损失
-            test_loss_b = calculate_test_loss(model_b, eval_inputs, eval_targets, eval_criterion, device)
+            test_loss_b = calculate_test_loss(model_b, eval_inputs, eval_targets, eval_criterion, device, market_seqs=eval_market_seqs)
 
             print(f'  [模型B] 训练损失: {avg_loss_b:.4f}, 测试损失: {test_loss_b:.4f}, AUC: {stats_b["auc"]:.4f}')
             print(f'          预测均值: {stats_b["pred_mean"]:.3f}, 高置信(>0.7): {stats_b["high_conf_count"]}, 低置信(<0.2): {stats_b["low_conf_count"]}')
@@ -626,23 +630,27 @@ if __name__ == "__main__":
 
     print("="*60)
 
-    # 加载数据
     train_stock_info, test_stock_info = load_and_preprocess_data()
 
-    # 打印数据集统计
+    print("\n正在加载大盘数据...")
+    gdm = GlobalDataManager.get_instance()
+    try:
+        gdm.load_market_data()
+        print(f"✓ 大盘数据加载成功")
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"大盘数据加载失败: {e}。请确保 {DataConfig.MARKET_DATA_PATH} 文件存在。")
+
     print("\n" + "="*60)
     print("数据集统计")
     print(f" 训练集: {len(train_stock_info)} 只股票")
     print(f" 测试集: {len(test_stock_info)} 只股票")
 
-    # 创建模型A
     print("\n正在创建模型A (FP32精度)...")
     model_a = create_model().to(device)
 
     total_params = sum(p.numel() for p in model_a.parameters())
     print(f" 模型A参数数: {total_params:,}")
 
-    # 开始训练
     print("\n开始克隆模型训练...")
     best_return_a, best_return_b = train_clone_model(
         model_a, train_stock_info, test_stock_info,

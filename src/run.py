@@ -20,7 +20,7 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 from config import (ModelConfig, DataConfig, DeviceConfig, LossConfig)
 from model import create_model
 from data import (load_and_preprocess_data, create_fixed_evaluation_dataset,FeatureNormalizer,
-                  create_recent_days_dataset, normalize_and_validate_context_window)
+                  create_recent_days_dataset, normalize_and_validate_context_window, GlobalDataManager)
 from training_utils import evaluate_model, calculate_test_loss, DynamicWeightedBCE
 
 
@@ -115,7 +115,7 @@ def load_model(model_path, device):
     return model, metadata
 
 
-def generate_latest_input(stock_data, file_name, feature_normalizer=None):
+def generate_latest_input(stock_data, latest_date, file_name, feature_normalizer=None):
     """
     为单只股票生成最新一天的模型输入（不需要未来数据）用于预测
     
@@ -124,10 +124,11 @@ def generate_latest_input(stock_data, file_name, feature_normalizer=None):
     
     Args:
         stock_data: 股票原始数据
+        latest_date: 最新交易日期 (YYYYMMDD 格式的整数)
         file_name: 文件名
         feature_normalizer: 可选的特征归一化器实例
     
-    返回: (input_seq, stock_code) 或 None
+    返回: (input_seq, market_seq, stock_code) 或 None
     """
     context_length = DataConfig.CONTEXT_LENGTH
     data_length = len(stock_data)
@@ -152,10 +153,18 @@ def generate_latest_input(stock_data, file_name, feature_normalizer=None):
     if input_seq is None:
         return None
     
+    # 获取市场数据
+    gdm = GlobalDataManager.get_instance()
+    market_seq = None
+    if gdm.is_market_data_loaded():
+        market_seq = gdm.get_market_context(latest_date)
+        if market_seq is not None and feature_normalizer is not None:
+            market_seq = feature_normalizer.transform_market(market_seq)
+    
     # 提取股票代码（去掉.csv后缀）
     stock_code = file_name.replace('.csv', '')
     
-    return input_seq, stock_code
+    return input_seq, market_seq, stock_code
 
 
 def load_all_stock_data(data_dir=DataConfig.DATA_DIR):
@@ -199,19 +208,22 @@ def score_all_stocks(model, stock_list, device, feature_normalizer=None):
     skipped = 0
     
     all_inputs = []
+    all_market_seqs = []
     all_codes = []
     all_dates = []
     all_closes = []
     all_changes = []
     
     for fname, data, latest_date in stock_list:
-        result = generate_latest_input(data, fname, feature_normalizer)
+        latest_date_int = int(latest_date)
+        result = generate_latest_input(data, latest_date_int, fname, feature_normalizer)
         if result is None:
             skipped += 1
             continue
         
-        input_seq, stock_code = result
+        input_seq, market_seq, stock_code = result
         all_inputs.append(input_seq)
+        all_market_seqs.append(market_seq)
         all_codes.append(stock_code)
         all_dates.append(latest_date)
         
@@ -227,9 +239,14 @@ def score_all_stocks(model, stock_list, device, feature_normalizer=None):
     if len(all_inputs) == 0:
         return [], skipped
     
+    # 检查市场数据是否全部获取成功
+    if any(m is None for m in all_market_seqs):
+        raise RuntimeError("部分股票缺少市场数据，请确保 GlobalDataManager 已加载大盘数据。")
+    
     # 批量推理
     batch_size = DataConfig.EVAL_BATCH_SIZE
     all_inputs_np = np.array(all_inputs)
+    all_market_np = np.array(all_market_seqs)
     all_scores = []
     
     num_batches = (len(all_inputs_np) + batch_size - 1) // batch_size
@@ -238,7 +255,8 @@ def score_all_stocks(model, stock_list, device, feature_normalizer=None):
             start = i * batch_size
             end = min((i + 1) * batch_size, len(all_inputs_np))
             batch = torch.tensor(all_inputs_np[start:end], dtype=torch.float32, device=device)
-            preds = torch.sigmoid(model(batch)).cpu().numpy().flatten()
+            batch_market = torch.tensor(all_market_np[start:end], dtype=torch.float32, device=device)
+            preds = torch.sigmoid(model(batch, batch_market)).cpu().numpy().flatten()
             all_scores.extend(preds)
             del batch
     
@@ -332,7 +350,7 @@ def run_evaluation(model, test_stock_info, device, feature_normalizer=None):
     print_section("模型评估")
     print(f"│  正在创建评估数据集...")
 
-    eval_inputs, eval_targets, eval_cumulative_returns, eval_day_indices, eval_daily_returns = \
+    eval_inputs, eval_targets, eval_cumulative_returns, eval_day_indices, eval_daily_returns, eval_market_seqs = \
         create_fixed_evaluation_dataset(test_stock_info, feature_normalizer)
     
     print(f"│  评估样本数: {len(eval_inputs)}")
@@ -342,7 +360,8 @@ def run_evaluation(model, test_stock_info, device, feature_normalizer=None):
         model, eval_inputs, eval_targets, eval_cumulative_returns,
         device, model_name="选中模型",
         eval_day_indices=eval_day_indices,
-        eval_daily_returns=eval_daily_returns
+        eval_daily_returns=eval_daily_returns,
+        market_seqs=eval_market_seqs
     )
     
     # 创建评估损失函数（与 train.py 一致）
@@ -365,7 +384,7 @@ def run_evaluation(model, test_stock_info, device, feature_normalizer=None):
         eval_criterion = nn.BCEWithLogitsLoss(reduction='mean')
     
     # 计算测试集损失
-    test_loss = calculate_test_loss(model, eval_inputs, eval_targets, eval_criterion, device)
+    test_loss = calculate_test_loss(model, eval_inputs, eval_targets, eval_criterion, device, market_seqs=eval_market_seqs)
     
     # 打印评估结果（与 train.py 格式一致）
     print(f"│")
@@ -628,11 +647,14 @@ def calculate_recent_days_stats(model, test_stock_info, device, top_n_per_day=4,
     
     返回: daily_stats [(count, return, available_days), ...]
     """
-    recent_inputs, recent_returns, recent_day_indices, recent_available_days = \
-        create_recent_days_dataset(test_stock_info, feature_normalizer)
+    recent_result = create_recent_days_dataset(test_stock_info, feature_normalizer)
+    recent_inputs, recent_returns, recent_day_indices, recent_available_days, recent_market_seqs = recent_result
     
     if recent_inputs is None or len(recent_inputs) == 0:
         return []
+    
+    if recent_market_seqs is None:
+        raise RuntimeError("市场数据未加载，无法计算最近天数统计。请确保 GlobalDataManager 已加载大盘数据。")
     
     model.eval()
     all_preds = []
@@ -641,7 +663,8 @@ def calculate_recent_days_stats(model, test_stock_info, device, top_n_per_day=4,
         batch_size = DataConfig.EVAL_BATCH_SIZE
         for i in range(0, len(recent_inputs), batch_size):
             batch = torch.tensor(recent_inputs[i:i+batch_size], dtype=torch.float32, device=device)
-            preds = torch.sigmoid(model(batch)).cpu().numpy().flatten()
+            batch_market = torch.tensor(recent_market_seqs[i:i+batch_size], dtype=torch.float32, device=device)
+            preds = torch.sigmoid(model(batch, batch_market)).cpu().numpy().flatten()
             all_preds.extend(preds)
     
     all_preds = np.array(all_preds)
@@ -774,11 +797,17 @@ def main():
 
     train_stock_info, test_stock_info = load_and_preprocess_data()
 
-    # 运行评估
+    print(f"\n  [市场Token] 正在加载大盘数据...")
+    gdm = GlobalDataManager.get_instance()
+    try:
+        gdm.load_market_data()
+        print(f"  [市场Token] ✓ 大盘数据加载成功")
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"大盘数据加载失败: {e}。请确保 {DataConfig.MARKET_DATA_PATH} 文件存在。")
+
     stats = run_evaluation(model, test_stock_info, device, feature_normalizer)
     threshold = stats['top_threshold']
     
-    # 询问是否选股
     print()
     while True:
         choice = input("  是否进入选股模式？(y/n): ").strip().lower()
@@ -789,10 +818,8 @@ def main():
             return
         print("  请输入 y 或 n")
     
-    # 执行选股
     results = run_stock_selection(model, threshold, device, feature_normalizer)
     
-    # 计算并打印最近10天实战收益率表格（包含临时数据，仅用于展示）
     recent_stats = calculate_recent_days_stats(model, test_stock_info, device, top_n_per_day=DataConfig.TOP_N_PER_DAY, threshold=threshold, feature_normalizer=feature_normalizer)
     if recent_stats:
         print_recent_days_chart(recent_stats, last_n=10)

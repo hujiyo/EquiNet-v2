@@ -54,6 +54,9 @@ class DataConfig:
     TOP_N_PER_DAY = 0                 # 实战收益率：每天选股数量（0表示使用全局阈值模式）
     MAX_SELECT_PER_DAY = 4             # 全局阈值模式下每天最多选股数量（0表示不限制）
 
+    MARKET_CONTEXT_LENGTH = 10
+    MARKET_DATA_PATH = './data/000000.csv'
+
 # ==================== 模型架构参数 ====================
 class ModelConfig:
     """模型架构相关参数"""
@@ -68,6 +71,8 @@ class ModelConfig:
     # 注意力机制参数
     DROPOUT_RATE = 0                 # Dropout比率设置为0降低欠拟合
     ATTENTION_DROPOUT = 0            # 注意力Dropout比率设置为0降低欠拟合
+
+    MARKET_TOKEN_TYPE_ID = INPUT_DIM
 
     # ========== Embedding Linear层参数初始化配置 ==========
     # - gain=1.0: 标准Xavier/Kaiming (std≈0.29), 稳定

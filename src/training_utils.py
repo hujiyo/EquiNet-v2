@@ -340,7 +340,7 @@ class TaskAlignedLoss(nn.Module):
 
 
 def evaluate_model(model, eval_inputs, eval_targets, eval_cumulative_returns,
-                   device, batch_size=DataConfig.EVAL_BATCH_SIZE, model_name="", eval_day_indices=None, top_n_per_day=None, eval_daily_returns=None):
+                   device, batch_size=DataConfig.EVAL_BATCH_SIZE, model_name="", eval_day_indices=None, top_n_per_day=None, eval_daily_returns=None, market_seqs=None):
     """
     模型评估函数
     涨停样本已在generate_sample_from_index中过滤，无需再次过滤
@@ -379,9 +379,12 @@ def evaluate_model(model, eval_inputs, eval_targets, eval_cumulative_returns,
             end_idx = min((i + 1) * batch_size, num_samples)
             
             batch_inputs = torch.tensor(eval_inputs[start_idx:end_idx], dtype=torch.float32, device=device)
-            batch_preds = torch.sigmoid(model(batch_inputs))
+            if market_seqs is not None:
+                batch_market = torch.tensor(market_seqs[start_idx:end_idx], dtype=torch.float32, device=device)
+                batch_preds = torch.sigmoid(model(batch_inputs, batch_market))
+            else:
+                batch_preds = torch.sigmoid(model(batch_inputs))
             all_preds.append(batch_preds.cpu().numpy().flatten())
-            del batch_inputs
     
     all_preds = np.concatenate(all_preds)
     all_targets = np.array(eval_targets)
@@ -723,6 +726,7 @@ def save_model_with_metadata(model_state_dict, top_return, top_threshold, auc,
             'dropout_rate':     ModelConfig.DROPOUT_RATE,
             'attention_dropout':ModelConfig.ATTENTION_DROPOUT,
             'context_length':   DataConfig.CONTEXT_LENGTH,
+            'market_context_length': DataConfig.MARKET_CONTEXT_LENGTH,
         },
         'train_params': {
             'epochs':           TrainingConfig.EPOCHS,
@@ -749,7 +753,7 @@ def save_model_with_metadata(model_state_dict, top_return, top_threshold, auc,
 
     return save_path
 
-def calculate_test_loss(model, eval_inputs, eval_targets, criterion, device, batch_size=1024):
+def calculate_test_loss(model, eval_inputs, eval_targets, criterion, device, batch_size=1024, market_seqs=None):
     """
     计算测试集损失（官方标准：除以样本数）
 
@@ -776,7 +780,12 @@ def calculate_test_loss(model, eval_inputs, eval_targets, criterion, device, bat
             batch_targets = torch.tensor(eval_targets[start_idx:end_idx],
                                         dtype=torch.float32).to(device)
 
-            outputs = model(batch_inputs)
+            if market_seqs is not None:
+                batch_market = torch.tensor(market_seqs[start_idx:end_idx],
+                                            dtype=torch.float32).to(device)
+                outputs = model(batch_inputs, batch_market)
+            else:
+                outputs = model(batch_inputs)
             loss = criterion(outputs.squeeze(-1), batch_targets)
             total_loss += loss.item() * (end_idx - start_idx)
 

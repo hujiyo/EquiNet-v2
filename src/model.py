@@ -3,6 +3,8 @@ EquiNet 模型定义文件
 
 包含所有模型架构相关的类：
 - PositionalEncoding: 位置编码
+- TwoDimensionalPositionalEncoding: 二维位置编码（用于Token化模型）
+- MarketTokenEncoder: 市场Token编码器
 - MultiHeadAttention: 多头注意力机制
 - TransformerLayer: Transformer层
 - AttentionPooling: 多注意力聚合（可学习query token + cross-attention）
@@ -201,12 +203,19 @@ class StockTransformer(nn.Module):
     架构统一性：
     - Embedding 层：线性投影（无激活函数）
     - Transformer 层：标准 Attention + FFN 结构
+    
+    市场token：
+    - 市场token由大盘涨跌序列编码而来
+    - 放在序列末尾，作为全局上下文
     """
-    def __init__(self, input_dim, d_model, nhead, num_layers, output_dim, seq_len):
+    def __init__(self, input_dim, d_model, nhead, num_layers, output_dim, seq_len, market_context_length=None):
         super(StockTransformer, self).__init__()
 
         # Linear-Embedding：单一线性层，主流 Transformer 标准做法
         # 输入特征直接线性映射到 d_model 维，无中间层和激活函数
+        if market_context_length is None:
+            market_context_length = DataConfig.MARKET_CONTEXT_LENGTH
+
         self.embedding = nn.Linear(input_dim, d_model)
 
         # 使用标准位置编码
@@ -236,15 +245,27 @@ class StockTransformer(nn.Module):
 
         self.dropout = nn.Dropout(ModelConfig.DROPOUT_RATE)
 
+        self.market_encoder = MarketTokenEncoder(market_context_length, d_model)
         # 应用初始化
         self.apply(init_weights)
 
-    def forward(self, x):
+    def forward(self, x, market_seq):
         # x: [batch_size, seq_len, 6] (OHLC + volume + exchange)
 
         # 1. 统一Embedding：6个特征一起映射到d_model维
+
+        """
+        Args:
+            x: [batch_size, seq_len, 6] (OHLC + volume + exchange)
+            market_seq: [batch_size, market_context_length] 大盘涨跌序列
+
+        Returns:
+            output: [batch_size, 1] 预测logits
+        """
         x = self.embedding(x)  # [batch_size, seq_len, d_model]
 
+        market_token = self.market_encoder(market_seq)
+        x = torch.cat([x, market_token], dim=1)
         # 2. 位置编码
         x = self.pos_encoding(x)
         x = self.dropout(x)
@@ -263,13 +284,40 @@ class StockTransformer(nn.Module):
         output = self.output_projection(aggregated)  # [batch_size, output_dim]
         return output
 
+class MarketTokenEncoder(nn.Module):
+    """
+    市场Token编码器
+
+    将N天的大盘涨跌序列编码为单个token，类似于BERT的[CLS] token。
+    
+    输入: [batch_size, market_context_length] 大盘涨跌序列
+    输出: [batch_size, 1, d_model] 市场token
+    
+    设计原理：
+    - 使用线性层将大盘序列直接映射到d_model维
+    - 市场token作为全局上下文信息参与Transformer处理
+    - 放在序列末尾，通过attention与个股token交互
+    """
+    def __init__(self, market_context_length, d_model):
+        super(MarketTokenEncoder, self).__init__()
+        self.market_proj = nn.Linear(market_context_length, d_model)
+        
+    def forward(self, market_seq):
+        """
+        Args:
+            market_seq: [batch_size, market_context_length] 大盘涨跌序列
+            
+        Returns:
+            market_token: [batch_size, 1, d_model] 市场token
+        """
+        return self.market_proj(market_seq).unsqueeze(1)
 
 # ==================== 工厂函数 ====================
 
 def create_model(input_dim=ModelConfig.INPUT_DIM, d_model=ModelConfig.D_MODEL, 
                  nhead=ModelConfig.NHEAD, num_layers=ModelConfig.NUM_LAYERS,
                  output_dim=ModelConfig.OUTPUT_DIM, seq_len=DataConfig.CONTEXT_LENGTH,
-                 model_arch=None):
+                 market_context_length=DataConfig.MARKET_CONTEXT_LENGTH, model_arch=None):
     """
     Args:
         参数均为可选，如果不提供则使用 ModelConfig 中的默认值
@@ -287,6 +335,7 @@ def create_model(input_dim=ModelConfig.INPUT_DIM, d_model=ModelConfig.D_MODEL,
         num_layers = model_arch.get('num_layers', num_layers)
         output_dim = model_arch.get('output_dim', output_dim)
         seq_len    = model_arch.get('context_length', seq_len)
+        market_context_length = model_arch.get('market_context_length', market_context_length)
 
     model = StockTransformer(
         input_dim=input_dim,
@@ -294,10 +343,11 @@ def create_model(input_dim=ModelConfig.INPUT_DIM, d_model=ModelConfig.D_MODEL,
         nhead=nhead,
         num_layers=num_layers,
         output_dim=output_dim,
-        seq_len=seq_len
+        seq_len=seq_len,
+        market_context_length=market_context_length
     )
 
-        # 打印模型信息
+    # 打印模型信息
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -306,6 +356,7 @@ def create_model(input_dim=ModelConfig.INPUT_DIM, d_model=ModelConfig.D_MODEL,
     print(f"{'='*50}")
     print(f"输入维度: {input_dim}")
     print(f"序列长度: {seq_len}")
+    print(f"市场Token: 启用 (窗口长度: {market_context_length})")
     print(f"Embedding维度: {d_model}")
     print(f"注意力头数: {nhead}")
     print(f"Transformer层数: {num_layers}")
