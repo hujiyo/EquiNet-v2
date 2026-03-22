@@ -4,6 +4,7 @@ EquiNet 模型定义文件
 包含所有模型架构相关的类：
 - PositionalEncoding: 位置编码
 - TwoDimensionalPositionalEncoding: 二维位置编码（用于Token化模型）
+- MarketTokenEncoder: 市场Token编码器
 - MultiHeadAttention: 多头注意力机制
 - TransformerLayer: Transformer层
 - AttentionPooling: 多注意力聚合（可学习query token + cross-attention）
@@ -204,12 +205,19 @@ class StockTransformer(nn.Module):
     架构统一性：
     - Embedding 层：线性投影（无激活函数）
     - Transformer 层：标准 Attention + FFN 结构
+    
+    市场token：
+    - 市场token由大盘涨跌序列编码而来
+    - 放在序列末尾，作为全局上下文
     """
-    def __init__(self, input_dim, d_model, nhead, num_layers, output_dim, seq_len):
+    def __init__(self, input_dim, d_model, nhead, num_layers, output_dim, seq_len, market_context_length=None):
         super(StockTransformer, self).__init__()
 
         # Linear-Embedding：单一线性层，主流 Transformer 标准做法
         # 输入特征直接线性映射到 d_model 维，无中间层和激活函数
+        if market_context_length is None:
+            market_context_length = DataConfig.MARKET_CONTEXT_LENGTH
+
         self.embedding = nn.Linear(input_dim, d_model)
 
         # 使用标准位置编码
@@ -239,15 +247,27 @@ class StockTransformer(nn.Module):
 
         self.dropout = nn.Dropout(ModelConfig.DROPOUT_RATE)
 
+        self.market_encoder = MarketTokenEncoder(market_context_length, d_model)
         # 应用初始化
         self.apply(init_weights)
 
-    def forward(self, x):
+    def forward(self, x, market_seq):
         # x: [batch_size, seq_len, 6] (OHLC + volume + exchange)
 
         # 1. 统一Embedding：6个特征一起映射到d_model维
+
+        """
+        Args:
+            x: [batch_size, seq_len, 6] (OHLC + volume + exchange)
+            market_seq: [batch_size, market_context_length] 大盘涨跌序列
+
+        Returns:
+            output: [batch_size, 1] 预测logits
+        """
         x = self.embedding(x)  # [batch_size, seq_len, d_model]
 
+        market_token = self.market_encoder(market_seq)
+        x = torch.cat([x, market_token], dim=1)
         # 2. 位置编码
         x = self.pos_encoding(x)
         x = self.dropout(x)
@@ -287,6 +307,7 @@ class TwoDimensionalPositionalEncoding(nn.Module):
         super(TwoDimensionalPositionalEncoding, self).__init__()
 
         self.num_features = num_features
+        self.num_timesteps = num_timesteps
 
         # 可学习的时间步编码：每个时间步一个d_model维向量
         self.temporal_pe = nn.Embedding(num_timesteps, d_model)
@@ -322,6 +343,92 @@ class TwoDimensionalPositionalEncoding(nn.Module):
         return x + positional_encodings.unsqueeze(0)
 
 
+class ExtendedTwoDimensionalPositionalEncoding(nn.Module):
+    """
+    扩展的二维位置编码：支持市场token的特殊位置编码
+
+    设计原理：
+    - 个股token: temporal_id = pos // INPUT_DIM (0-CONTEXT_LENGTH-1), feature_id = pos % INPUT_DIM (0-INPUT_DIM-1)
+    - 市场token: temporal_id = CONTEXT_LENGTH (固定), feature_id = MARKET_TOKEN_TYPE_ID (固定，值为INPUT_DIM)
+    
+    这样设计的好处：
+    1. 市场token有独立的时间步位置（在所有个股之后）
+    2. 市场token有独立的特征类型（与个股特征区分）
+    3. 未来可以扩展其他类型的全局token
+    """
+    def __init__(self, d_model, num_timesteps=DataConfig.CONTEXT_LENGTH, num_features=ModelConfig.INPUT_DIM,
+                 market_token_type_id=None):
+        super(ExtendedTwoDimensionalPositionalEncoding, self).__init__()
+        
+        self.num_features = num_features
+        self.num_timesteps = num_timesteps
+        self.market_token_type_id = market_token_type_id if market_token_type_id is not None else num_features
+        
+        total_timesteps = num_timesteps + 1
+        total_feature_types = num_features + 1
+        
+        self.temporal_pe = nn.Embedding(total_timesteps, d_model)
+        self.feature_pe = nn.Embedding(total_feature_types, d_model)
+
+    def forward(self, x):
+        """
+        Args:
+            x: [batch_size, seq_len, d_model]
+               seq_len = CONTEXT_LENGTH * INPUT_DIM + 1 (包含市场token)
+
+        Returns:
+            x + 二维位置编码
+        """
+        seq_len = x.size(1)
+        device = x.device
+
+        token_positions = torch.arange(seq_len, device=device)
+
+        stock_seq_len = seq_len - 1
+        temporal_ids = torch.zeros(seq_len, dtype=torch.long, device=device)
+        feature_ids = torch.zeros(seq_len, dtype=torch.long, device=device)
+        
+        stock_positions = token_positions[:stock_seq_len]
+        temporal_ids[:stock_seq_len] = stock_positions // self.num_features
+        feature_ids[:stock_seq_len] = stock_positions % self.num_features
+        
+        temporal_ids[-1] = self.num_timesteps
+        feature_ids[-1] = self.market_token_type_id
+
+        positional_encodings = self.temporal_pe(temporal_ids) + self.feature_pe(feature_ids)
+
+        # 添加batch维度并加到输入上
+        return x + positional_encodings.unsqueeze(0)
+
+class MarketTokenEncoder(nn.Module):
+    """
+    市场Token编码器
+
+    将N天的大盘涨跌序列编码为单个token，类似于BERT的[CLS] token。
+    
+    输入: [batch_size, market_context_length] 大盘涨跌序列
+    输出: [batch_size, 1, d_model] 市场token
+    
+    设计原理：
+    - 使用线性层将大盘序列直接映射到d_model维
+    - 市场token作为全局上下文信息参与Transformer处理
+    - 放在序列末尾，通过attention与个股token交互
+    """
+    def __init__(self, market_context_length, d_model):
+        super(MarketTokenEncoder, self).__init__()
+        
+        self.market_proj = nn.Linear(market_context_length, d_model)
+        
+    def forward(self, market_seq):
+        """
+        Args:
+            market_seq: [batch_size, market_context_length] 大盘涨跌序列
+            
+        Returns:
+            market_token: [batch_size, 1, d_model] 市场token
+        """
+        return self.market_proj(market_seq).unsqueeze(1)
+
 class TokenizedStockTransformer(nn.Module):
     """
     Token化版本的股票预测Transformer模型
@@ -331,17 +438,24 @@ class TokenizedStockTransformer(nn.Module):
     2. 二维位置编码: 时间步编码(0-59) + 特征类型编码(0-5)
     3. Transformer: 学习token间的关系
     4. 输出: 聚合所有token信息进行预测
+    
+    市场token：
+    - 市场token由大盘涨跌序列编码而来
+    - 放在序列末尾，作为全局上下文
+    - 使用特殊的位置编码（独立的时间步和特征类型）
     """
-    def __init__(self, vocab_size, d_model, nhead, num_layers, output_dim, max_seq_len):
+    def __init__(self, vocab_size, d_model, nhead, num_layers, output_dim, max_seq_len,
+                 market_context_length):
         super(TokenizedStockTransformer, self).__init__()
 
         # Token Embedding层：将离散token ID映射到连续向量空间
         self.token_embedding = nn.Embedding(vocab_size, d_model)
 
-        # 二维位置编码：时间步 + 特征类型
-        self.pos_encoding = TwoDimensionalPositionalEncoding(d_model)
+        self.pos_encoding = ExtendedTwoDimensionalPositionalEncoding(
+            d_model, 
+            market_token_type_id=ModelConfig.MARKET_TOKEN_TYPE_ID
+        )
 
-        # Transformer层：标准架构
         self.layers = nn.ModuleList([
             TransformerLayer(d_model, nhead)
             for _ in range(num_layers)
@@ -363,13 +477,15 @@ class TokenizedStockTransformer(nn.Module):
 
         self.dropout = nn.Dropout(ModelConfig.DROPOUT_RATE)
 
+        self.market_encoder = MarketTokenEncoder(market_context_length, d_model)
         # 应用初始化
         self.apply(init_weights)
 
-    def forward(self, x):
+    def forward(self, x, market_seq):
         """
         Args:
             x: [batch_size, CONTEXT_LENGTH, INPUT_DIM] 连续值 或 [batch_size, CONTEXT_LENGTH*INPUT_DIM] token ID
+            market_seq: [batch_size, market_context_length] 大盘涨跌序列
 
         Returns:
             output: [batch_size, 1] 预测logits
@@ -386,6 +502,8 @@ class TokenizedStockTransformer(nn.Module):
         # Token Embedding查表
         x = self.token_embedding(x)
 
+        market_token = self.market_encoder(market_seq)
+        x = torch.cat([x, market_token], dim=1)
         # 位置编码
         x = self.pos_encoding(x)
         x = self.dropout(x)
@@ -436,6 +554,7 @@ def create_model(input_dim=ModelConfig.INPUT_DIM, d_model=ModelConfig.D_MODEL,
         seq_len    = model_arch.get('context_length', seq_len)
 
     model_type = (model_arch.get('model_type', ModelConfig.MODEL_TYPE) if model_arch else ModelConfig.MODEL_TYPE).lower()
+    market_context_length = model_arch.get('market_context_length', DataConfig.MARKET_CONTEXT_LENGTH) if model_arch else DataConfig.MARKET_CONTEXT_LENGTH
 
     if model_type == 'continuous':
         # 创建连续值模型
@@ -445,10 +564,10 @@ def create_model(input_dim=ModelConfig.INPUT_DIM, d_model=ModelConfig.D_MODEL,
             nhead=nhead,
             num_layers=num_layers,
             output_dim=output_dim,
-            seq_len=seq_len
+            seq_len=seq_len,
+            market_context_length=market_context_length
         )
 
-        # 打印模型信息
         total_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -457,6 +576,7 @@ def create_model(input_dim=ModelConfig.INPUT_DIM, d_model=ModelConfig.D_MODEL,
         print(f"{'='*50}")
         print(f"输入维度: {input_dim}")
         print(f"序列长度: {seq_len}")
+        print(f"市场Token: 启用 (窗口长度: {market_context_length})")
         print(f"Embedding维度: {d_model}")
         print(f"注意力头数: {nhead}")
         print(f"Transformer层数: {num_layers}")
@@ -472,7 +592,8 @@ def create_model(input_dim=ModelConfig.INPUT_DIM, d_model=ModelConfig.D_MODEL,
             nhead=nhead,
             num_layers=num_layers,
             output_dim=output_dim,
-            max_seq_len=ModelConfig.TOKEN_SEQ_LEN
+            max_seq_len=ModelConfig.TOKEN_SEQ_LEN,
+            market_context_length=market_context_length
         )
 
         # 打印模型信息
@@ -484,6 +605,7 @@ def create_model(input_dim=ModelConfig.INPUT_DIM, d_model=ModelConfig.D_MODEL,
         print(f"{'='*50}")
         print(f"Token序列长度: {ModelConfig.TOKEN_SEQ_LEN}")
         print(f"位置编码: 二维 (时间步+特征类型)")
+        print(f"市场Token: 启用 (窗口长度: {market_context_length})")
         print(f"Embedding维度: {d_model}")
         print(f"注意力头数: {nhead}")
         print(f"Transformer层数: {num_layers}")

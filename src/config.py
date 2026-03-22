@@ -53,6 +53,8 @@ class DataConfig:
     TOP_K = 1                   # 排序收益评估的百分比（取预测概率前N%的样本）
     TOP_N_PER_DAY = 0                 # 实战收益率：每天选股数量（0表示使用全局阈值模式）
     MAX_SELECT_PER_DAY = 4             # 全局阈值模式下每天最多选股数量（0表示不限制）
+    MARKET_CONTEXT_LENGTH = 10
+    MARKET_DATA_PATH = './data/000000.csv'
 
 # ==================== 模型架构参数 ====================
 class ModelConfig:
@@ -78,6 +80,7 @@ class ModelConfig:
     # Token化参数（仅当 MODEL_TYPE='tokenized' 时使用）
     TOKEN_SEQ_LEN = DataConfig.CONTEXT_LENGTH * INPUT_DIM  # Token序列长度 = 60 * 6 = 360
 
+    MARKET_TOKEN_TYPE_ID = INPUT_DIM
     # ========== Embedding Linear层参数初始化配置 ==========
     # - gain=1.0: 标准Xavier/Kaiming (std≈0.29), 稳定
     # - gain=0.5: 主流认为适合小模型和低SNR任务
