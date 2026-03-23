@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 import shutil
 import argparse
+from src.config import DataConfig
 
 class StockDataUpdater:
     def __init__(self, data_dir: str, backup: bool = True):
@@ -59,9 +60,11 @@ class StockDataUpdater:
             self.login_success = False
     
     def get_existing_stocks(self) -> set:
-        """获取已存在的股票代码集合"""
+        """获取已存在的股票代码集合（排除大盘指数文件）"""
         existing_stocks = set()
         for file in self.data_dir.glob("*.csv"):
+            if file.name == DataConfig.MARKET_DATA_FILE:
+                continue
             stock_code = file.stem
             existing_stocks.add(stock_code)
         return existing_stocks
@@ -228,6 +231,184 @@ class StockDataUpdater:
         except Exception as e:
             print(f"✗ {stock_code} 数据处理异常：{e}")
             return None
+
+    def fetch_index_data(self, start_date: Optional[str] = None) -> Optional[pd.DataFrame]:
+        """
+        获取上证指数的 K 线数据（不复权）
+
+        Args:
+            start_date: 起始日期 (YYYY-MM-DD 格式)，None 表示获取所有数据
+        Returns:
+            DataFrame 或 None
+        """
+        columns = ['time', 'start', 'max', 'min', 'end', 'volume', 'exchange']
+
+        try:
+            end_date = datetime.datetime.now().strftime("%Y-%m-%d")
+
+            if start_date:
+                query_start = start_date
+            else:
+                query_start = "2010-01-01"
+
+            rs = bs.query_history_k_data_plus(
+                DataConfig.MARKET_CODE,
+                "date,open,high,low,close,volume,amount,turn,tradestatus,pctChg,peTTM,"
+                "pbMRQ,psTTM,pcfNcfTTM,isST",
+                start_date=query_start,
+                end_date=end_date,
+                frequency="d",
+                adjustflag="3"
+            )
+
+            if rs.error_code != '0':
+                print(f"✗ 上证指数 数据获取失败：{rs.error_msg}")
+                return None
+
+            data_list = []
+            while rs.error_code == '0' and rs.next():
+                row = rs.get_row_data()
+                data_list.append(row)
+
+            if not data_list:
+                return pd.DataFrame(columns=columns)
+
+            df = pd.DataFrame(data_list, columns=rs.fields)
+
+            df = df.rename(columns={
+                'date': 'time',
+                'open': 'start',
+                'high': 'max',
+                'low': 'min',
+                'close': 'end'
+            })
+
+            df['time'] = df['time'].str.replace('-', '')
+            df = df[df['time'] != '']
+            if len(df) == 0:
+                return pd.DataFrame(columns=columns)
+            df['time'] = df['time'].astype(int)
+
+            df['start'] = pd.to_numeric(df['start'], errors='coerce')
+            df['max'] = pd.to_numeric(df['max'], errors='coerce')
+            df['min'] = pd.to_numeric(df['min'], errors='coerce')
+            df['end'] = pd.to_numeric(df['end'], errors='coerce')
+
+            if 'amount' in df.columns:
+                df['amount'] = pd.to_numeric(df['amount'], errors='coerce')
+                df['volume'] = (df['amount'] / 1000.0).fillna(0.0)
+            else:
+                df['volume'] = pd.Series([0.0] * len(df), dtype=float)
+
+            df = df.dropna(subset=['start', 'max', 'min', 'end'])
+
+            if len(df) == 0:
+                return None
+
+            if 'turn' in df.columns:
+                df['turn'] = pd.to_numeric(df['turn'], errors='coerce')
+                df['exchange'] = df['turn'].fillna(0.0).astype(float)
+            else:
+                df['exchange'] = 0.0
+
+            df = df[['time', 'start', 'max', 'min', 'end', 'volume', 'exchange']]
+            df = df.iloc[::-1].reset_index(drop=True)
+            return df
+
+        except Exception as e:
+            print(f"✗ 上证指数 数据处理异常：{e}")
+            return None
+
+    def update_index_data(self, incremental: bool = True) -> bool:
+        """
+        更新上证指数数据
+
+        Args:
+            incremental: 是否增量更新
+        Returns:
+            是否更新成功
+        """
+        index_file_path = self.data_dir / DataConfig.MARKET_DATA_FILE
+
+        if incremental and index_file_path.exists():
+            last_date = self.get_last_date_in_file("000000")
+            if last_date:
+                start_date = self._convert_date_format(last_date)
+                if start_date:
+                    next_date = self._get_next_date(start_date)
+                    df = self.fetch_index_data(start_date=next_date)
+                    if df is None:
+                        print(f"✗ 上证指数 数据拉取失败，稍后重试")
+                        return False
+                    if df.empty:
+                        print(f"✓ 上证指数 已最新 (最新：{last_date})")
+                        return True
+                    return self.save_index_data(df, old_latest_date=last_date)
+                else:
+                    print(f"⚠ 上证指数 日期格式转换失败，重新获取全量数据")
+                    df = self.fetch_index_data()
+                    if df is None or df.empty:
+                        print(f"✗ 上证指数 全量获取失败，稍后重试")
+                        return False
+                    return self.save_index_data(df)
+            else:
+                df = self.fetch_index_data()
+                if df is None or df.empty:
+                    print(f"✗ 上证指数 获取失败，无法初始化数据")
+                    return False
+                return self.save_index_data(df)
+        else:
+            df = self.fetch_index_data()
+            if df is None or df.empty:
+                print(f"✗ 上证指数 全量更新失败：未获取到数据")
+                return False
+            return self.save_index_data(df)
+
+    def save_index_data(self, df: pd.DataFrame, old_latest_date: Optional[str] = None) -> bool:
+        """
+        保存上证指数数据到 CSV 文件
+
+        Args:
+            df: 数据 DataFrame
+            old_latest_date: 原文件中最新日期（仅增量更新时使用）
+        Returns:
+            是否保存成功
+        """
+        try:
+            file_path = self.data_dir / DataConfig.MARKET_DATA_FILE
+
+            if file_path.exists():
+                old_df = pd.read_csv(file_path)
+
+                new_dates = set(df['time'].astype(str))
+                old_dates = set(old_df['time'].astype(str))
+
+                existing_dates = new_dates & old_dates
+                if existing_dates:
+                    df = df[~df['time'].astype(str).isin(existing_dates)]
+
+                if len(df) == 0:
+                    return True
+
+                combined_df = pd.concat([df, old_df], ignore_index=True)
+                combined_df = combined_df.sort_values('time', ascending=False).reset_index(drop=True)
+                combined_df.to_csv(file_path, index=False)
+
+                new_latest = str(int(combined_df.iloc[0]['time']))
+                if old_latest_date:
+                    print(f"✓ 上证指数 增量更新：{old_latest_date} → {new_latest} (新增 {len(df)} 条，总计 {len(combined_df)} 条)")
+                else:
+                    print(f"✓ 上证指数 增量更新：新增 {len(df)} 条，总计 {len(combined_df)} 条 (最新：{new_latest})")
+                return True
+            else:
+                df.to_csv(file_path, index=False)
+                new_latest = str(int(df.iloc[0]['time'])) if len(df) > 0 else 'N/A'
+                print(f"✓ 上证指数 全量保存：{len(df)} 条 (最新：{new_latest})")
+                return True
+
+        except Exception as e:
+            print(f"✗ 上证指数 保存失败：{e}")
+            return False
     
     def _format_stock_code(self, stock_code: str) -> Optional[str]:
         """
@@ -384,6 +565,9 @@ class StockDataUpdater:
             return
         
         try:
+            print(f"\n更新上证指数数据...")
+            self.update_index_data(incremental=incremental)
+
             if stock_codes:
                 codes_to_update = stock_codes
                 print(f"\n更新指定股票：{len(stock_codes)} 只")

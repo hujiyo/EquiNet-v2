@@ -392,21 +392,17 @@ class GlobalDataManager:
         self._date_to_idx = {}
         GlobalDataManager._initialized = True
     
-    def load_market_data(self, market_data_path: str = None) -> 'GlobalDataManager':
+    def load_market_data(self) -> 'GlobalDataManager':
         """
         加载大盘数据并构建索引
         
-        Args:
-            market_data_path: 大盘数据文件路径，默认使用 DataConfig.MARKET_DATA_PATH
-            
         Returns:
             self: 支持链式调用
         """
         if self._market_data is not None:
             return self
         
-        if market_data_path is None:
-            market_data_path = DataConfig.MARKET_DATA_PATH
+        market_data_path = DataConfig.DATA_DIR / DataConfig.MARKET_DATA_FILE
         
         if not os.path.exists(market_data_path):
             raise FileNotFoundError(f"大盘数据文件不存在: {market_data_path}")
@@ -624,7 +620,7 @@ def load_and_preprocess_data(data_dir=DataConfig.DATA_DIR, test_days=DataConfig.
     - 最低数据要求：test_days + REQUIRED_LENGTH
     """
     
-    all_files = [f for f in os.listdir(data_dir) if f.endswith('.csv')]
+    all_files = [f for f in os.listdir(data_dir) if f.endswith('.csv') and f != DataConfig.MARKET_DATA_FILE]
     all_files.sort()
     
     print(f"总共 {len(all_files)} 只股票文件")

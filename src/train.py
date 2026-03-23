@@ -638,7 +638,7 @@ if __name__ == "__main__":
         gdm.load_market_data()
         print(f"✓ 大盘数据加载成功")
     except FileNotFoundError as e:
-        raise FileNotFoundError(f"大盘数据加载失败: {e}。请确保 {DataConfig.MARKET_DATA_PATH} 文件存在。")
+        raise FileNotFoundError(f"大盘数据加载失败: {e}。请确保 {DataConfig.MARKET_DATA_FILE} 文件存在。")
 
     print("\n" + "="*60)
     print("数据集统计")

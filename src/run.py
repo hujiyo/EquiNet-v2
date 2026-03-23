@@ -174,7 +174,7 @@ def load_all_stock_data(data_dir=DataConfig.DATA_DIR):
     """
     import pandas as pd
     
-    all_files = sorted([f for f in os.listdir(data_dir) if f.endswith('.csv')])
+    all_files = sorted([f for f in os.listdir(data_dir) if f.endswith('.csv') and f != DataConfig.MARKET_DATA_FILE])
     stock_list = []
     
     for fname in all_files:
@@ -803,7 +803,7 @@ def main():
         gdm.load_market_data()
         print(f"  [市场Token] ✓ 大盘数据加载成功")
     except FileNotFoundError as e:
-        raise FileNotFoundError(f"大盘数据加载失败: {e}。请确保 {DataConfig.MARKET_DATA_PATH} 文件存在。")
+        raise FileNotFoundError(f"大盘数据加载失败: {e}。请确保 {DataConfig.MARKET_DATA_FILE} 文件存在。")
 
     stats = run_evaluation(model, test_stock_info, device, feature_normalizer)
     threshold = stats['top_threshold']

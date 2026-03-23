@@ -37,6 +37,10 @@ class DataConfig:
     # 评估参数
     EVAL_BATCH_SIZE = 256            # 评估批处理大小（分批处理，减少显存占用）
 
+    MARKET_DATA_FILE = '000000.csv'
+    MARKET_CODE = 'sh.000001'
+    MARKET_CONTEXT_LENGTH = 10
+
     # ========== 特征归一化配置 ==========
     # 使用 QuantileTransformer + StandardScaler 进行高级特征归一化
     # 优点：
@@ -54,8 +58,6 @@ class DataConfig:
     TOP_N_PER_DAY = 0                 # 实战收益率：每天选股数量（0表示使用全局阈值模式）
     MAX_SELECT_PER_DAY = 4             # 全局阈值模式下每天最多选股数量（0表示不限制）
 
-    MARKET_CONTEXT_LENGTH = 10
-    MARKET_DATA_PATH = './data/000000.csv'
 
 # ==================== 模型架构参数 ====================
 class ModelConfig:
