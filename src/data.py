@@ -18,6 +18,7 @@ import argparse
 import pickle
 import numpy as np
 import pandas as pd
+from pathlib import Path
 from config import DataConfig, generate_label, calculate_returns
 from multiprocessing import Pool, cpu_count
 from sklearn.preprocessing import QuantileTransformer, StandardScaler
@@ -402,7 +403,7 @@ class GlobalDataManager:
         if self._market_data is not None:
             return self
         
-        market_data_path = DataConfig.DATA_DIR / DataConfig.MARKET_DATA_FILE
+        market_data_path = Path(DataConfig.DATA_DIR) / DataConfig.MARKET_DATA_FILE
         
         if not os.path.exists(market_data_path):
             raise FileNotFoundError(f"大盘数据文件不存在: {market_data_path}")

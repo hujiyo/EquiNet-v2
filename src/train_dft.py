@@ -29,7 +29,8 @@ from model import create_model
 from data import (
     load_and_preprocess_data,
     create_sampler, sample_with_pools,
-    create_fixed_evaluation_dataset
+    create_fixed_evaluation_dataset,
+    GlobalDataManager
 )
 
 from training_utils import (
@@ -157,14 +158,15 @@ def train_dft_model(model, train_stock_info, test_stock_info,
         torch.cuda.manual_seed_all(seed)
 
     # 创建评估数据集
-    eval_inputs, eval_targets, eval_cumulative_returns, eval_day_indices, eval_daily_returns = create_fixed_evaluation_dataset(test_stock_info)
+    eval_inputs, eval_targets, eval_cumulative_returns, eval_day_indices, eval_daily_returns, eval_market_seqs = create_fixed_evaluation_dataset(test_stock_info)
 
     # 初始模型评估
     stats_init = evaluate_model(
         model, eval_inputs, eval_targets, eval_cumulative_returns,
         device, model_name="初始模型",
         eval_day_indices=eval_day_indices,
-        eval_daily_returns=eval_daily_returns
+        eval_daily_returns=eval_daily_returns,
+        market_seqs=eval_market_seqs
     )
     print(f"初始模型评估: AUC={stats_init['auc']:.4f}, Top{DataConfig.TOP_K}%收益={stats_init['top_return']*100:+.2f}%")
     if stats_init['realistic_stats'] is not None:
@@ -287,7 +289,7 @@ def train_dft_model(model, train_stock_info, test_stock_info,
         print(f'Epoch {epoch + 1}/{epochs}, LR: {current_lr:.6f} ({lr_status})')
 
         # 采样训练数据（包含cumulative_returns以支持TaskAlignedLoss）
-        epoch_inputs, epoch_targets, epoch_cum_returns = sample_with_pools(
+        epoch_inputs, epoch_targets, epoch_cum_returns, epoch_market_seqs = sample_with_pools(
             sampler, train_stock_info, batch_size, batches_per_epoch, train_rng
         )
 
@@ -306,6 +308,7 @@ def train_dft_model(model, train_stock_info, test_stock_info,
         epoch_inputs_tensor = torch.tensor(epoch_inputs, dtype=torch.float32).to(device)
         epoch_targets_tensor = torch.tensor(epoch_targets, dtype=torch.float32).to(device)
         epoch_returns_tensor = torch.tensor(epoch_cum_returns, dtype=torch.float32).to(device)
+        epoch_market_tensor = torch.tensor(epoch_market_seqs, dtype=torch.float32).to(device) if epoch_market_seqs is not None else None
 
         # 计算实际可用的batch数量
         actual_batches = len(epoch_inputs_tensor) // batch_size
@@ -319,10 +322,11 @@ def train_dft_model(model, train_stock_info, test_stock_info,
             batch_inputs = epoch_inputs_tensor[start_idx:end_idx]
             batch_targets = epoch_targets_tensor[start_idx:end_idx]
             batch_returns = epoch_returns_tensor[start_idx:end_idx]
+            batch_market = epoch_market_tensor[start_idx:end_idx] if epoch_market_tensor is not None else None
 
             optimizer.zero_grad()
 
-            output = model(batch_inputs)
+            output = model(batch_inputs, batch_market)
 
             # 计算DFT自引导权重
             with torch.no_grad():
@@ -377,11 +381,12 @@ def train_dft_model(model, train_stock_info, test_stock_info,
             model, eval_inputs, eval_targets, eval_cumulative_returns,
             device, model_name="DFT",
             eval_day_indices=eval_day_indices,
-            eval_daily_returns=eval_daily_returns
+            eval_daily_returns=eval_daily_returns,
+            market_seqs=eval_market_seqs
         )
 
         avg_loss = total_loss / total_samples if total_samples > 0 else 0
-        test_loss = calculate_test_loss(model, eval_inputs, eval_targets, eval_criterion, device)
+        test_loss = calculate_test_loss(model, eval_inputs, eval_targets, eval_criterion, device, market_seqs=eval_market_seqs)
 
         print(f'  [DFT模型] 训练损失: {avg_loss:.4f}, 测试损失: {test_loss:.4f}, AUC: {stats["auc"]:.4f}')
         print(f'            预测均值: {stats["pred_mean"]:.3f}, 高置信(>0.7): {stats["high_conf_count"]}, 低置信(<0.2): {stats["low_conf_count"]}')
@@ -574,6 +579,15 @@ if __name__ == "__main__":
     print(f"训练集: {len(train_stock_info)} 只股票")
     print(f"测试集: {len(test_stock_info)} 只股票")
     print("="*60)
+
+    # 加载大盘数据
+    print("\n正在加载大盘数据...")
+    gdm = GlobalDataManager.get_instance()
+    try:
+        gdm.load_market_data()
+        print(f"✓ 大盘数据加载成功")
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"大盘数据加载失败: {e}。请确保 {DataConfig.MARKET_DATA_FILE} 文件存在。")
 
     print(f"\n正在加载模型: {args.model}")
     model = create_model().to(device)
