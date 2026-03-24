@@ -43,7 +43,13 @@ def init_weights(module):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif module.in_features == ModelConfig.INPUT_DIM and module.out_features == ModelConfig.D_MODEL:
+            # stock_token embedding: 使用默认gain
             nn.init.xavier_uniform_(module.weight, gain=ModelConfig.EMBEDDING_INIT_GAIN)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif module.out_features == ModelConfig.D_MODEL and module.in_features != ModelConfig.D_MODEL and module.in_features != ffn_hidden_dim:
+            # market_token embedding: 使用配置文件中定义的专用gain
+            nn.init.xavier_uniform_(module.weight, gain=ModelConfig.MARKET_EMBEDDING_INIT_GAIN)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif module.in_features == ModelConfig.D_MODEL and module.out_features == ffn_hidden_dim:
@@ -71,7 +77,8 @@ class PositionalEncoding(nn.Module):
     """
     def __init__(self, d_model, seq_len=DataConfig.CONTEXT_LENGTH):
         super(PositionalEncoding, self).__init__()        
-        self.pe = nn.Embedding(seq_len, d_model)
+        # 考虑因子数量，增加位置编码长度
+        self.pe = nn.Embedding(seq_len + DataConfig.FACTOR_NUM, d_model)
 
     def forward(self, x):
         #添加位置编码，LayerNorm在后续层中可能使用

@@ -24,6 +24,8 @@ class DataConfig:
     FUTURE_DAYS = 3                  # 未来预测天数
     REQUIRED_LENGTH = CONTEXT_LENGTH + FUTURE_DAYS  # 每样本总需求长度
 
+    FACTOR_NUM = 1                   # 因子数量,目前只有market因子
+
     # 采样策略配置
     # 'temporal': 时间顺序采样（指针在训练集上循环滑动）
     # 'random': 随机采样（每次随机选择股票和位置）
@@ -81,7 +83,8 @@ class ModelConfig:
     # - gain=0.5: 主流认为适合小模型和低SNR任务
     # - gain=1.5: 放大数值差异，主流认为可能放大噪声和信号导致训练不稳定
     # W ~ U[-gain*√(6/(fan_in+fan_out)), +gain*√(6/(fan_in+fan_out))]
-    EMBEDDING_INIT_GAIN = 1.5         # Embedding层初始化增益（推荐0.5，符合当代最佳实践）
+    EMBEDDING_INIT_GAIN = 1.5         # Embedding层初始化增益（stock_token专用）
+    MARKET_EMBEDDING_INIT_GAIN = 1.2  # Market Token Embedding层初始化增益（market_token专用）
 
     # FFN层初始化配置
     # - GELU在x~N(0,1)附近的有效增益约为0.588，需要补偿：gain ≈ 1/0.588 ≈ 1.7
