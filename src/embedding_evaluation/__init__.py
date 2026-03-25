@@ -15,7 +15,7 @@
     
     # 创建分析器
     analyzer = MultiFactorEmbeddingAnalyzer(
-        model_path='./out/model.pth',
+        model_path='./src/out/model.pth',
         factors=['stock', 'market']
     )
     
@@ -26,12 +26,15 @@
 from .base import FactorEmbeddingEvaluator
 from .registry import FactorEvaluatorRegistry, register_evaluator
 from .multi_factor_analyzer import MultiFactorEmbeddingAnalyzer
+from .analyzers import EmbeddingModuleWrapper, MarketEmbeddingWrapper
 
 __all__ = [
     'FactorEmbeddingEvaluator',
     'FactorEvaluatorRegistry',
     'register_evaluator',
     'MultiFactorEmbeddingAnalyzer',
+    'EmbeddingModuleWrapper',
+    'MarketEmbeddingWrapper',
 ]
 
 # 自动导入并注册所有评估器

@@ -12,10 +12,19 @@ EquiNet 模型定义文件
 - create_model(): 工厂函数，创建模型
 """
 
+import os
+import sys
+
+# 确保能正确导入其他模块（无论从哪里运行）
+_current_file_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_file_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 import math
 import torch
 import torch.nn as nn
-from config import ModelConfig, DataConfig
+from src.config import ModelConfig, DataConfig
 
 def init_weights(module):
     """

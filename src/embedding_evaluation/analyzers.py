@@ -12,6 +12,83 @@ from scipy.spatial.distance import cosine
 from scipy.stats import pearsonr
 
 
+class EmbeddingModuleWrapper(nn.Module):
+    """
+    Embedding模块包装器
+    
+    将细处理(FeatureNormalizer)和Embedding层封装为整体，
+    与旧版本 old.py 中的 EmbeddingModule 保持一致。
+    
+    评估对象: 细处理 + Embedding层
+    输入: 粗处理后的数据
+    输出: Embedding层输出
+    """
+    
+    def __init__(self, embedding_layer, feature_normalizer=None):
+        super().__init__()
+        self.embedding_layer = embedding_layer
+        self.feature_normalizer = feature_normalizer
+    
+    def forward(self, x):
+        """
+        Args:
+            x: 粗处理后的数据 [batch, seq_len, 6]
+               范围：OHLE [-0.1, 0.1], Volume [0, 1], Exchange [0, 1]
+        
+        Returns:
+            embedded: [batch, seq_len, d_model]
+        """
+        if self.feature_normalizer is not None:
+            x_np = x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x
+            if x_np.ndim == 3:
+                batch_size, seq_len, n_features = x_np.shape
+                x_normalized = np.empty_like(x_np, dtype=np.float32)
+                for b in range(batch_size):
+                    x_normalized[b] = self.feature_normalizer.transform(x_np[b])
+                x = torch.tensor(x_normalized, dtype=torch.float32, device=self.embedding_layer.weight.device)
+            else:
+                x_normalized = self.feature_normalizer.transform(x_np)
+                x = torch.tensor(x_normalized, dtype=torch.float32, device=self.embedding_layer.weight.device)
+        
+        return self.embedding_layer(x)
+
+
+class MarketEmbeddingWrapper(nn.Module):
+    """
+    市场Embedding模块包装器
+    
+    将大盘数据归一化和市场Embedding层封装为整体。
+    
+    评估对象: transform_market + MarketTokenEncoder
+    输入: 原始大盘涨跌序列
+    输出: 市场token embedding
+    """
+    
+    def __init__(self, market_encoder, feature_normalizer=None):
+        super().__init__()
+        self.market_encoder = market_encoder
+        self.feature_normalizer = feature_normalizer
+    
+    def forward(self, x):
+        """
+        Args:
+            x: 大盘涨跌序列 [batch, market_context_length]
+        
+        Returns:
+            market_token: [batch, 1, d_model]
+        """
+        if self.feature_normalizer is not None:
+            x_np = x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x
+            # transform_market 期望单个样本，需要逐个处理
+            batch_size = x_np.shape[0]
+            x_normalized = np.empty_like(x_np, dtype=np.float32)
+            for b in range(batch_size):
+                x_normalized[b] = self.feature_normalizer.transform_market(x_np[b])
+            x = torch.tensor(x_normalized, dtype=torch.float32, device=self.market_encoder.market_proj.weight.device)
+        
+        return self.market_encoder(x)
+
+
 def analyze_jacobian_numeric(
     embedding_layer: nn.Module,
     sample_inputs: np.ndarray,

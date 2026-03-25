@@ -5,6 +5,14 @@
 """
 
 import os
+import sys
+
+# 确保能正确导入其他模块（无论从哪里运行）
+_current_file_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_project_root = os.path.dirname(_current_file_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 import pickle
 import torch
 import numpy as np
@@ -14,10 +22,8 @@ from typing import Dict, Any, List, Optional, Tuple
 from .registry import FactorEvaluatorRegistry
 from .base import FactorEmbeddingEvaluator
 
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from model import create_model
-from config import ModelConfig
+from src.model import create_model
+from src.config import ModelConfig
 
 
 class MultiFactorEmbeddingAnalyzer:
@@ -28,7 +34,7 @@ class MultiFactorEmbeddingAnalyzer:
     
     使用示例:
         analyzer = MultiFactorEmbeddingAnalyzer(
-            model_path='./out/model.pth',
+            model_path='./src/out/model.pth',
             factors=['stock', 'market']
         )
         analyzer.load_model(feature_normalizer=feature_normalizer)
@@ -90,11 +96,13 @@ class MultiFactorEmbeddingAnalyzer:
         self.feature_normalizer = feature_normalizer
         
         print(f"\n正在加载模型: {self.model_path}")
-        self.model = create_model(feature_normalizer=feature_normalizer)
+        self.model = create_model()
         
         checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
         if 'model_state_dict' in checkpoint:
             self.model.load_state_dict(checkpoint['model_state_dict'])
+        elif 'state_dict' in checkpoint:
+            self.model.load_state_dict(checkpoint['state_dict'])
         else:
             self.model.load_state_dict(checkpoint)
         
@@ -126,13 +134,13 @@ class MultiFactorEmbeddingAnalyzer:
             print(f"{'='*60}")
             
             try:
-                # 准备样本数据
+                # 准备样本数据（只做粗处理）
                 print(f"  准备样本数据...")
                 sample_data = evaluator.prepare_sample_data(stock_info_list, n_samples)
                 print(f"  获取 {len(sample_data)} 个样本")
                 
-                # 执行评估
-                factor_results = evaluator.evaluate(self.model, sample_data, self.device)
+                # 执行评估（细处理在评估时由 EmbeddingModuleWrapper 完成）
+                factor_results = evaluator.evaluate(self.model, sample_data, self.device, self.feature_normalizer)
                 results[factor_name] = factor_results
                 
                 # 打印摘要

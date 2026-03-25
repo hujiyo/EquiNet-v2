@@ -11,17 +11,23 @@ EquiNet 模型推理与选股脚本
 - 最近几天展示：包含临时样本（available_days < 3），仅用于展示，不参与阈值计算
 '''
 
-import os, sys, torch, numpy as np, glob, re
+import os
+import sys
+
+# 确保能正确导入其他模块（无论从哪里运行）
+_current_file_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_file_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+import torch, numpy as np, glob, re
 from datetime import datetime
 
-# 设置工作目录
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
-from config import (ModelConfig, DataConfig, DeviceConfig, LossConfig)
-from model import create_model
-from data import (load_and_preprocess_data, create_fixed_evaluation_dataset,FeatureNormalizer,
+from src.config import (ModelConfig, DataConfig, DeviceConfig, LossConfig)
+from src.model import create_model
+from src.data import (load_and_preprocess_data, create_fixed_evaluation_dataset,FeatureNormalizer,
                   create_recent_days_dataset, normalize_and_validate_context_window, GlobalDataManager)
-from training_utils import evaluate_model, calculate_test_loss, DynamicWeightedBCE
+from src.training_utils import evaluate_model, calculate_test_loss, DynamicWeightedBCE
 
 
 # ==================== 工具函数 ====================

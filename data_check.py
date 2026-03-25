@@ -25,6 +25,13 @@ from typing import List, Optional, Dict
 from dataclasses import dataclass
 from enum import Enum
 import argparse
+import os
+import sys
+
+# 添加项目根目录到路径，以便导入 src.config
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _script_dir)
+
 from src.config import DataConfig
 
 class CheckStatus(Enum):
@@ -1060,7 +1067,8 @@ class DataChecker:
 
 def main():
     parser = argparse.ArgumentParser(description='股票数据质量检查工具')
-    parser.add_argument('--data-dir', type=str, default=r'src\data',help='数据存储目录 (默认：src\\data)')
+    parser.add_argument('--data-dir', type=str, default=None,
+                       help='数据存储目录 (默认：使用 config.py 中的配置)')
     parser.add_argument('--days', type=int, default=100,help='检查最近多少天的数据 (默认：100)')
     parser.add_argument('--stocks', type=str, nargs='+',help='指定要检查的股票代码列表')
     parser.add_argument('--verbose', action='store_true',help='详细输出模式')
@@ -1068,10 +1076,9 @@ def main():
     parser.add_argument('--no-backup', action='store_true',help='禁用备份')
     args = parser.parse_args()
     
-    data_dir = Path(args.data_dir)
-    if not data_dir.is_absolute():
-        script_dir = Path(__file__).parent
-        data_dir = script_dir / data_dir
+    # 使用 config 中的路径作为默认值
+    data_dir = args.data_dir or DataConfig.DATA_DIR
+    data_dir = Path(data_dir)
     
     checker = DataChecker(str(data_dir), check_days=args.days, backup=not args.no_backup)
     

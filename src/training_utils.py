@@ -16,11 +16,20 @@
 - create_scheduler_from_config: 根据配置创建学习率调度器
 '''
 
-import os,torch,torch.nn as nn,numpy as np
+import os
+import sys
+
+# 确保能正确导入其他模块（无论从哪里运行）
+_current_file_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_file_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+import torch,torch.nn as nn,numpy as np
 from datetime import datetime
 import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score
-from config import DataConfig,LossConfig,TrainingConfig
+from src.config import DataConfig,LossConfig,TrainingConfig
 import torch.optim as optim
 
 class WarmupScheduler:

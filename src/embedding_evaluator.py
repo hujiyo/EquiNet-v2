@@ -5,14 +5,17 @@ Embedding层评估工具 - 主入口
 支持个股因子(stock)和市场因子(market)的评估，并可扩展支持更多因子。
 
 使用示例:
-    # 评估所有因子
-    python embedding_evaluator.py --model ./out/model.pth
+    # 评估所有因子（自动使用最新的模型）
+    python embedding_evaluator.py
+    
+    # 评估指定模型
+    python embedding_evaluator.py --model model.pth
     
     # 评估指定因子
-    python embedding_evaluator.py --model ./out/model.pth --factors stock,market
+    python embedding_evaluator.py --model model.pth --factors stock,market
     
     # 仅评估市场因子
-    python embedding_evaluator.py --model ./out/model.pth --factors market
+    python embedding_evaluator.py --model model.pth --factors market
     
     # 列出新架构支持的所有因子
     python embedding_evaluator.py --list-factors
@@ -20,19 +23,52 @@ Embedding层评估工具 - 主入口
 
 import os
 import sys
+
+# 确保能正确导入其他模块（无论从哪里运行）
+_current_file_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_file_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 import argparse
 import pickle
 import numpy as np
 import torch
 
 # 导入新的多因子评估架构
-from embedding_evaluation import (
+from src.embedding_evaluation import (
     MultiFactorEmbeddingAnalyzer,
     FactorEvaluatorRegistry
 )
 
-from data import load_and_preprocess_data, GlobalDataManager
-from config import DataConfig
+from src.data import load_and_preprocess_data, GlobalDataManager, FeatureNormalizer
+from src.config import DataConfig
+
+
+def find_latest_model():
+    """
+    查找最新的模型文件
+    
+    搜索 ./out 和 ./src/out 目录下的 .pth 文件，
+    按修改时间排序，返回最新的模型路径。
+    
+    Returns:
+        str: 最新模型文件的路径，如果没有找到则返回 None
+    """
+    out_dirs = ['./out', './src/out']
+    model_files = []
+    
+    for out_dir in out_dirs:
+        if os.path.exists(out_dir):
+            for f in os.listdir(out_dir):
+                if f.endswith('.pth'):
+                    model_files.append(os.path.join(out_dir, f))
+    
+    if model_files:
+        model_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+        return model_files[0]
+    
+    return None
 
 
 def parse_arguments():
@@ -42,28 +78,31 @@ def parse_arguments():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  # 评估所有因子
-  python embedding_evaluator.py --model ./out/model.pth
+  # 评估所有因子（使用默认模型）
+  python embedding_evaluator.py
+  
+  # 评估指定模型
+  python embedding_evaluator.py --model model.pth
   
   # 评估指定因子
-  python embedding_evaluator.py --model ./out/model.pth --factors stock,market
+  python embedding_evaluator.py --model model.pth --factors stock,market
   
   # 仅评估市场因子
-  python embedding_evaluator.py --model ./out/model.pth --factors market
+  python embedding_evaluator.py --model model.pth --factors market
   
   # 列出新架构支持的所有因子
   python embedding_evaluator.py --list-factors
         """
     )
     
-    parser.add_argument('--model', type=str, default='out/best_model.pth',
-                       help='模型文件路径 (默认: out/best_model.pth)')
+    parser.add_argument('--model', type=str, default=None,
+                       help='模型文件路径，不指定则自动查找最新的模型')
     parser.add_argument('--factors', type=str, default='all',
                        help='要评估的因子，逗号分隔，"all"表示所有因子 (默认: all)')
     parser.add_argument('--list-factors', action='store_true',
                        help='列出所有可用的因子')
-    parser.add_argument('--output-dir', type=str, default='out_eval_results',
-                       help='输出目录 (默认: out_eval_results)')
+    parser.add_argument('--output-dir', type=str, default='./src/out_eval_results',
+                       help='输出目录 (默认: ./src/out_eval_results)')
     parser.add_argument('--n-samples', type=int, default=500,
                        help='每个因子的样本数量 (默认: 500)')
     parser.add_argument('--feature-normalizer', type=str, default=None,
@@ -79,6 +118,25 @@ def parse_arguments():
 def main():
     """主函数"""
     args = parse_arguments()
+    
+    # 处理模型路径
+    if args.model is None:
+        # 未指定模型，自动查找最新的模型
+        model_path = find_latest_model()
+        if model_path:
+            print(f"找到模型文件，使用最新的: {os.path.basename(model_path)}")
+        else:
+            print("未找到模型文件，将使用随机初始化模型")
+            model_path = None
+    else:
+        # 自动拼接模型路径（如果传入的是文件名而非完整路径）
+        if not os.path.dirname(args.model):
+            model_path = os.path.join(DataConfig.OUTPUT_DIR, args.model)
+        elif not os.path.isabs(args.model) and not args.model.startswith('./src/'):
+            # 如果传入的是相对路径但不是以 ./src/ 开头，也拼接
+            model_path = os.path.join(DataConfig.OUTPUT_DIR, os.path.basename(args.model))
+        else:
+            model_path = args.model
     
     # 列出所有可用因子
     if args.list_factors:
@@ -109,11 +167,19 @@ def main():
     
     # 加载特征归一化器
     feature_normalizer = None
+    normalizer_path = DataConfig.NORMALIZER_PATH
+    
     if args.feature_normalizer and os.path.exists(args.feature_normalizer):
         print(f"\n正在加载特征归一化器: {args.feature_normalizer}")
-        with open(args.feature_normalizer, 'rb') as f:
-            feature_normalizer = pickle.load(f)
+        feature_normalizer = FeatureNormalizer.load(args.feature_normalizer)
         print("特征归一化器加载完成")
+    elif os.path.exists(normalizer_path):
+        print(f"\n正在加载特征归一化器: {normalizer_path}")
+        feature_normalizer = FeatureNormalizer.load(normalizer_path)
+        print("特征归一化器加载完成")
+    else:
+        print(f"\n⚠ 未找到归一化器文件: {normalizer_path}")
+        print("  评估将只使用粗处理，不应用细归一化")
     
     # 加载股票数据
     print("\n正在加载股票数据...")
@@ -141,7 +207,7 @@ def main():
     print(f"\n正在初始化多因子分析器...")
     try:
         analyzer = MultiFactorEmbeddingAnalyzer(
-            model_path=args.model,
+            model_path=model_path,
             factors=factors
         )
     except ValueError as e:

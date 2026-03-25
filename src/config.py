@@ -8,9 +8,9 @@ import torch
 # ==================== 数据参数 ====================
 class DataConfig:
     """数据相关参数"""
-    # 数据路径
-    DATA_DIR = './data'              # 数据目录
-    OUTPUT_DIR = './out'             # 输出目录
+    # 数据路径 - 统一使用 ./src/xxx/ 风格，清晰无歧义
+    DATA_DIR = './src/data'          # 数据目录
+    OUTPUT_DIR = './src/out'         # 输出目录
 
     # 数据分割参数（按时间划分）
     TEST_DAYS = 110                   # 测试集天数（每只股票的最近N天作为测试集）
@@ -54,7 +54,7 @@ class DataConfig:
     # 归一化器配置
     NORMALIZER_OUTPUT_DISTRIBUTION = 'normal'  # 'normal' (标准正态) 或 'uniform' (均匀分布)
     NORMALIZER_N_QUANTILES = 1000            # 分位数数量（越大越精确但越慢）
-    NORMALIZER_PATH = './normalizer.pkl'  # 归一化器保存/加载路径
+    NORMALIZER_PATH = './src/normalizer.pkl'  # 归一化器保存/加载路径
 
     TOP_K = 1                   # 排序收益评估的百分比（取预测概率前N%的样本）
     TOP_N_PER_DAY = 0                 # 实战收益率：每天选股数量（0表示使用全局阈值模式）

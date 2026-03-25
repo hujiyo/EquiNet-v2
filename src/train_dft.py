@@ -16,24 +16,33 @@ DFT模型训练脚本（自引导式直接微调）
 - 权重随训练动态演化：随着模型学习进步，"不确定"的样本会变化，权重自然跟着调整
 '''
 
-import os, torch, torch.nn as nn, torch.optim as optim, torch.nn.functional as F, numpy as np
+import os
+import sys
+
+# 确保能正确导入其他模块（无论从哪里运行）
+_current_file_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_file_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
+import torch, torch.nn as nn, torch.optim as optim, torch.nn.functional as F, numpy as np
 import argparse
 import copy
 import random
 import csv
 from datetime import datetime
-from config import (TrainingConfig,DataConfig,DeviceConfig,print_config_summary,LossConfig)
+from src.config import (TrainingConfig,DataConfig,DeviceConfig,print_config_summary,LossConfig)
 
-from model import create_model
+from src.model import create_model
 
-from data import (
+from src.data import (
     load_and_preprocess_data,
     create_sampler, sample_with_pools,
     create_fixed_evaluation_dataset,
     GlobalDataManager
 )
 
-from training_utils import (
+from src.training_utils import (
     WarmupScheduler,
     evaluate_model,
     save_model_with_metadata,

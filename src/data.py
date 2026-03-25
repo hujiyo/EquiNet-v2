@@ -13,13 +13,20 @@ EquiNet 数据处理模块
 
 import os
 import sys
+
+# 确保能正确导入其他模块（无论从哪里运行）
+_current_file_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_current_file_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 import random
 import argparse
 import pickle
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from config import DataConfig, generate_label, calculate_returns
+from src.config import DataConfig, generate_label, calculate_returns
 from multiprocessing import Pool, cpu_count
 from sklearn.preprocessing import QuantileTransformer, StandardScaler
 from typing import Dict, List, Tuple, Optional

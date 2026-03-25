@@ -1,23 +1,29 @@
 """
 市场因子Embedding评估器
 
-评估市场Token(MarketTokenEncoder)的embedding层。
+评估市场Token(MarketTokenEncoder)的Embedding模块（归一化 + MarketTokenEncoder）。
 """
+
+import os
+import sys
+
+_current_file_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_project_root = os.path.dirname(_current_file_dir)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 import torch
 import torch.nn as nn
 import numpy as np
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from .base import FactorEmbeddingEvaluator
 from .registry import register_evaluator
 from . import analyzers
+from .analyzers import MarketEmbeddingWrapper
 
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import ModelConfig, DataConfig
-from data import GlobalDataManager
+from src.config import ModelConfig, DataConfig
+from src.data import GlobalDataManager
 
 
 @register_evaluator
@@ -25,7 +31,9 @@ class MarketFactorEvaluator(FactorEmbeddingEvaluator):
     """
     市场Token Embedding评估器
     
-    评估MarketTokenEncoder层，输入为market_context_length维大盘序列。
+    评估对象: MarketEmbeddingWrapper = transform_market + MarketTokenEncoder
+    输入: 原始大盘涨跌序列 [batch, market_context_length]
+    输出: 市场token embedding [batch, 1, d_model]
     """
     
     FACTOR_NAME = "market"
@@ -44,33 +52,33 @@ class MarketFactorEvaluator(FactorEmbeddingEvaluator):
     
     @property
     def feature_names(self) -> List[str]:
-        """动态生成特征名称"""
         return [f'Market_Day_{i+1}' for i in range(DataConfig.MARKET_CONTEXT_LENGTH)]
     
-    def get_embedding_layer(self, model: nn.Module) -> nn.Module:
+    def get_embedding_module(self, model: nn.Module, feature_normalizer: Optional[Any] = None) -> nn.Module:
         """
-        从模型中提取市场token encoder层
+        获取Embedding模块（归一化+MarketTokenEncoder的组合）
         
         Args:
             model: StockTransformer模型
+            feature_normalizer: 特征归一化器，可选
             
         Returns:
-            model.market_encoder层
+            MarketEmbeddingWrapper 实例
         """
-        return model.market_encoder
+        return MarketEmbeddingWrapper(model.market_encoder, feature_normalizer)
     
     def prepare_sample_data(self, stock_info_list: List[dict], n_samples: int = 500) -> np.ndarray:
         """
-        准备市场数据样本
+        准备市场数据样本（原始大盘涨跌序列，不做归一化）
         
-        从GlobalDataManager获取对应日期的大盘数据。
+        归一化在评估时由 MarketEmbeddingWrapper 完成。
         
         Args:
             stock_info_list: 股票信息列表
             n_samples: 需要的样本数量
             
         Returns:
-            市场序列数据 [n_samples, market_context_length]
+            市场序列数据 [n_samples, market_context_length] 原始大盘涨跌序列
             
         Raises:
             RuntimeError: 如果GlobalDataManager未加载大盘数据
@@ -84,15 +92,13 @@ class MarketFactorEvaluator(FactorEmbeddingEvaluator):
         
         market_samples = []
         
-        # 从每只股票中采样
-        for stock in stock_info_list[:50]:  # 最多50只股票
+        for stock in stock_info_list[:50]:
             times = stock.get('times', None)
             if times is None:
                 continue
             
             test_split = stock.get('test_split_point', 0)
             
-            # 从测试集部分采样
             for i in range(test_split, min(test_split + 10, len(times))):
                 target_date = int(times[i])
                 market_seq = gdm.get_market_context(target_date)
@@ -111,56 +117,58 @@ class MarketFactorEvaluator(FactorEmbeddingEvaluator):
         
         return np.array(market_samples[:n_samples])
     
-    def evaluate(self, model: nn.Module, sample_data: np.ndarray, device: torch.device) -> Dict[str, Any]:
+    def evaluate(self, model: nn.Module, sample_data: np.ndarray, device: torch.device,
+                 feature_normalizer: Optional[Any] = None) -> Dict[str, Any]:
         """
-        执行市场embedding评估
+        执行市场Embedding模块评估
         
         包括Jacobian分析、局部敏感性、输出多样性、饱和度分析，
         以及市场特定的时间衰减分析。
         
         Args:
             model: 模型实例
-            sample_data: 样本数据 [n_samples, market_context_length]
+            sample_data: 样本数据（原始大盘涨跌序列）
             device: 计算设备
+            feature_normalizer: 特征归一化器，可选
             
         Returns:
             评估结果字典
         """
-        embedding_layer = self.get_embedding_layer(model)
+        embedding_module = self.get_embedding_module(model, feature_normalizer)
         results = {}
         
         print(f"  执行Jacobian分析...")
         results['jacobian'] = analyzers.analyze_jacobian_numeric(
-            embedding_layer, sample_data, device,
+            embedding_module, sample_data, device,
             feature_names=self.feature_names
         )
         
         print(f"  执行局部敏感性分析...")
         results['local_sensitivity'] = analyzers.analyze_local_sensitivity(
-            embedding_layer, sample_data, device,
+            embedding_module, sample_data, device,
             feature_names=self.feature_names
         )
         
         print(f"  执行输出多样性分析...")
         results['diversity'] = analyzers.analyze_output_diversity(
-            embedding_layer, sample_data, device
+            embedding_module, sample_data, device
         )
         
         print(f"  执行饱和度分析...")
         results['saturation'] = analyzers.analyze_saturation(
-            embedding_layer, sample_data, device
+            embedding_module, sample_data, device
         )
         
         print(f"  执行时间衰减分析...")
         results['temporal_decay'] = self._analyze_temporal_decay(
-            embedding_layer, sample_data, device
+            embedding_module, sample_data, device
         )
         
         return results
     
     def _analyze_temporal_decay(
         self, 
-        embedding_layer: nn.Module, 
+        embedding_module: nn.Module, 
         sample_data: np.ndarray, 
         device: torch.device
     ) -> Dict[str, Any]:
@@ -170,7 +178,7 @@ class MarketFactorEvaluator(FactorEmbeddingEvaluator):
         即：越久远的数据（序列中靠前的元素）对当前embedding的影响是否越小。
         
         Args:
-            embedding_layer: embedding层
+            embedding_module: Embedding模块
             sample_data: 样本数据
             device: 计算设备
             
@@ -187,9 +195,8 @@ class MarketFactorEvaluator(FactorEmbeddingEvaluator):
             for i in range(n_samples):
                 x = sample_data[i:i+1]
                 x_tensor = torch.tensor(x, dtype=torch.float32, device=device)
-                base_output = embedding_layer(x_tensor)
+                base_output = embedding_module(x_tensor)
                 
-                # 对每个时间步进行扰动，观察影响
                 step_impacts = []
                 epsilon = 1e-3
                 
@@ -198,19 +205,18 @@ class MarketFactorEvaluator(FactorEmbeddingEvaluator):
                     x_perturbed[0, step] += epsilon
                     
                     x_perturbed_tensor = torch.tensor(x_perturbed, dtype=torch.float32, device=device)
-                    perturbed_output = embedding_layer(x_perturbed_tensor)
+                    perturbed_output = embedding_module(x_perturbed_tensor)
                     
                     impact = torch.norm(perturbed_output - base_output).item()
                     step_impacts.append(impact)
                 
                 decay_scores.append(step_impacts)
         
-        decay_scores = np.array(decay_scores)  # [n_samples, context_length]
+        decay_scores = np.array(decay_scores)
         avg_decay = decay_scores.mean(axis=0)
         
-        # 计算衰减趋势（最近的数据vs最远的数据）
-        recent_impact = avg_decay[-5:].mean()  # 最近5天
-        old_impact = avg_decay[:5].mean()      # 最远5天
+        recent_impact = avg_decay[-5:].mean()
+        old_impact = avg_decay[:5].mean()
         decay_ratio = recent_impact / (old_impact + 1e-10)
         
         return {
@@ -218,7 +224,7 @@ class MarketFactorEvaluator(FactorEmbeddingEvaluator):
             'recent_impact': float(recent_impact),
             'old_impact': float(old_impact),
             'decay_ratio': float(decay_ratio),
-            'has_decay': bool(decay_ratio > 1.2)  # 如果最近数据影响显著更大，则认为有衰减
+            'has_decay': bool(decay_ratio > 1.2)
         }
     
     def print_summary(self, results: Dict[str, Any]) -> None:
@@ -237,7 +243,6 @@ class MarketFactorEvaluator(FactorEmbeddingEvaluator):
             print(f"\nJacobian Analysis:")
             print(f"  Mean Norm: {jac.get('mean_jacobian_norm', 'N/A'):.6f}")
             if 'input_sensitivity' in jac:
-                # 只显示前5个和后5个
                 sens = jac['input_sensitivity']
                 keys = list(sens.keys())
                 print(f"  Input Sensitivity (showing first/last 5):")

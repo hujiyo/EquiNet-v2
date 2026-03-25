@@ -19,9 +19,13 @@ class FactorEmbeddingEvaluator(ABC):
     - factor_name: 返回因子名称
     - input_dim: 返回输入维度
     - output_dim: 返回输出维度
-    - get_embedding_layer: 从模型中提取对应的embedding层
-    - prepare_sample_data: 准备该因子的样本数据
+    - get_embedding_module: 获取Embedding模块（细处理+Embedding层的组合）
+    - prepare_sample_data: 准备该因子的样本数据（只做粗处理）
     - evaluate: 执行评估
+    
+    评估对象: EmbeddingModule = 细处理(FeatureNormalizer) + Embedding层
+    输入: 粗处理后的数据
+    输出: Embedding层输出
     
     示例:
         @register_evaluator
@@ -30,8 +34,8 @@ class FactorEmbeddingEvaluator(ABC):
             def factor_name(self) -> str:
                 return "my_factor"
             
-            def get_embedding_layer(self, model) -> nn.Module:
-                return model.my_factor_encoder
+            def get_embedding_module(self, model, feature_normalizer=None) -> nn.Module:
+                return EmbeddingModuleWrapper(model.my_factor_encoder, feature_normalizer)
             
             ...
     """
@@ -70,22 +74,25 @@ class FactorEmbeddingEvaluator(ABC):
         pass
     
     @abstractmethod
-    def get_embedding_layer(self, model: nn.Module) -> nn.Module:
+    def get_embedding_module(self, model: nn.Module, feature_normalizer: Optional[Any] = None) -> nn.Module:
         """
-        从模型中提取对应的embedding层
+        获取Embedding模块（细处理+Embedding层的组合）
         
         Args:
             model: StockTransformer模型实例
+            feature_normalizer: 特征归一化器，可选
             
         Returns:
-            对应的embedding层（如 model.embedding, model.market_encoder 等）
+            EmbeddingModuleWrapper 或 MarketEmbeddingWrapper 实例
         """
         pass
     
     @abstractmethod
     def prepare_sample_data(self, stock_info_list: list, n_samples: int = 500) -> np.ndarray:
         """
-        准备该因子的样本数据
+        准备该因子的样本数据（只做粗处理，不做细处理）
+        
+        细处理在评估时由 EmbeddingModuleWrapper 完成。
         
         Args:
             stock_info_list: 股票信息列表
@@ -93,21 +100,22 @@ class FactorEmbeddingEvaluator(ABC):
             
         Returns:
             该因子的输入数据，形状取决于因子类型
-            - 个股因子: [n_samples, seq_len, 6]
-            - 市场因子: [n_samples, market_context_length]
+            - 个股因子: [n_samples, seq_len, 6] 粗处理后的数据
+            - 市场因子: [n_samples, market_context_length] 原始大盘涨跌序列
             - 其他因子: 根据具体因子定义
         """
         pass
     
     @abstractmethod
-    def evaluate(self, model: nn.Module, sample_data: np.ndarray, device: torch.device) -> Dict[str, Any]:
+    def evaluate(self, model: nn.Module, sample_data: np.ndarray, device: torch.device, feature_normalizer: Optional[Any] = None) -> Dict[str, Any]:
         """
         执行评估
         
         Args:
             model: 模型实例
-            sample_data: 样本数据（由prepare_sample_data生成）
+            sample_data: 样本数据（由prepare_sample_data生成，只经过粗处理）
             device: 计算设备
+            feature_normalizer: 特征归一化器，可选
             
         Returns:
             评估结果字典，应包含以下标准键：
