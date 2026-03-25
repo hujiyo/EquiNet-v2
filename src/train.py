@@ -609,10 +609,6 @@ def train_clone_model(model_a, train_stock_info, test_stock_info,
 
 
 if __name__ == "__main__":
-    # 设置工作目录
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
-    # 打印配置摘要
     print_config_summary()
 
     # 获取设备

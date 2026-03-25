@@ -1592,8 +1592,6 @@ def fit_feature_normalizer(output_path='./normalizer.pkl', output_distribution='
 
 
 def main():
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
     parser = argparse.ArgumentParser(
         description='数据处理模块 兼 拟合特征归一化器训练脚本',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1608,8 +1606,8 @@ def main():
     parser.add_argument('--output-distribution', type=str, default='normal',choices=['normal', 'uniform'],
                         help='输出分布类型: normal (标准正态) 或 uniform (均匀分布)，默认 normal')
     parser.add_argument('--n-quantiles', type=int, default=1000,help='分位数数量（默认1000，越大越精确但越慢）')
-    parser.add_argument('--output', type=str, default='./normalizer.pkl',
-                        help='归一化器输出文件路径，默认 ./normalizer.pkl')
+    parser.add_argument('--output', type=str, default=DataConfig.NORMALIZER_PATH,
+                        help=f'归一化器输出文件路径，默认 {DataConfig.NORMALIZER_PATH}')
 
     args = parser.parse_args()
     fit_feature_normalizer(output_path=args.output,

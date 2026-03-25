@@ -567,8 +567,6 @@ if __name__ == "__main__":
                         help=f'随机种子（默认: {DataConfig.RANDOM_SEED}）')
     args = parser.parse_args()
 
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
     if not os.path.exists(args.model):
         print(f"错误：模型文件不存在: {args.model}")
         exit(1)

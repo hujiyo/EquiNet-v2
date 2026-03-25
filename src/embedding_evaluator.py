@@ -49,20 +49,19 @@ def find_latest_model():
     """
     查找最新的模型文件
     
-    搜索 ./out 和 ./src/out 目录下的 .pth 文件，
+    搜索 DataConfig.OUTPUT_DIR 目录下的 .pth 文件，
     按修改时间排序，返回最新的模型路径。
     
     Returns:
         str: 最新模型文件的路径，如果没有找到则返回 None
     """
-    out_dirs = ['./out', './src/out']
+    out_dir = DataConfig.OUTPUT_DIR
     model_files = []
     
-    for out_dir in out_dirs:
-        if os.path.exists(out_dir):
-            for f in os.listdir(out_dir):
-                if f.endswith('.pth'):
-                    model_files.append(os.path.join(out_dir, f))
+    if os.path.exists(out_dir):
+        for f in os.listdir(out_dir):
+            if f.endswith('.pth'):
+                model_files.append(os.path.join(out_dir, f))
     
     if model_files:
         model_files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
@@ -102,7 +101,7 @@ def parse_arguments():
     parser.add_argument('--list-factors', action='store_true',
                        help='列出所有可用的因子')
     parser.add_argument('--output-dir', type=str, default='./src/out_eval_results',
-                       help='输出目录 (默认: ./src/out_eval_results)')
+                       help=f'输出目录 (默认: ./src/out_eval_results)')
     parser.add_argument('--n-samples', type=int, default=500,
                        help='每个因子的样本数量 (默认: 500)')
     parser.add_argument('--feature-normalizer', type=str, default=None,
