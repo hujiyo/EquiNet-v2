@@ -22,6 +22,7 @@ if _project_root not in sys.path:
 
 import torch, numpy as np, glob, re
 from datetime import datetime
+import matplotlib.pyplot as plt
 
 from src.config import (ModelConfig, DataConfig, DeviceConfig, LossConfig)
 from src.model import create_model
@@ -345,6 +346,59 @@ def select_model(models):
             print(f"  ✗ 无效输入，请输入数字")
 
 
+def visualize_classification(preds, targets, title="模型分类能力可视化"):
+    """
+    可视化模型的分类能力
+    
+    Args:
+        preds: 模型预测值数组 (0-1)
+        targets: 真实标签数组 (0或1)
+        title: 图表标题
+    """
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
+    
+    preds = np.array(preds)
+    targets = np.array(targets)
+    
+    np.random.seed(42)
+    y_coords = np.random.uniform(0, 1, size=len(preds))
+    
+    mask_0 = targets < 0.5
+    mask_1 = targets >= 0.5
+    
+    plt.figure(figsize=(10, 8))
+    
+    plt.scatter(preds[mask_0], y_coords[mask_0], 
+                c='black', alpha=0.6, s=20, label=f'标签=0 ({np.sum(mask_0)}个)', marker='o')
+    
+    plt.scatter(preds[mask_1], y_coords[mask_1], 
+                c='blue', alpha=0.6, s=20, label=f'标签=1 ({np.sum(mask_1)}个)', marker='o')
+    
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
+    plt.xlabel('模型预测值', fontsize=12)
+    plt.ylabel('随机Y坐标', fontsize=12)
+    plt.title(title, fontsize=14)
+    plt.legend(loc='upper left', fontsize=10)
+    plt.grid(True, alpha=0.3)
+    
+    plt.axvline(x=0.5, color='red', linestyle='--', alpha=0.5, label='决策边界(0.5)')
+    
+    correct_0 = np.sum((preds[mask_0] < 0.5))
+    correct_1 = np.sum((preds[mask_1] >= 0.5))
+    total_correct = correct_0 + correct_1
+    accuracy = total_correct / len(preds) * 100
+    
+    info_text = f'准确率: {accuracy:.1f}%\n标签0预测<0.5: {correct_0}/{np.sum(mask_0)}\n标签1预测>=0.5: {correct_1}/{np.sum(mask_1)}'
+    plt.text(0.02, 0.98, info_text, transform=plt.gca().transAxes, 
+             fontsize=10, verticalalignment='top', 
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.tight_layout()
+    plt.show()
+
+
 def run_evaluation(model, test_stock_info, device, feature_normalizer=None):
     """
     执行模型评估（与 train.py 中对模型A的评估完全一致）
@@ -428,6 +482,8 @@ def run_evaluation(model, test_stock_info, device, feature_normalizer=None):
     
     print(f"│  └───────────────────────────────────────────────┘")
     print_section_end()
+    
+    stats['eval_targets'] = np.array(eval_targets)
     
     return stats
 
@@ -813,6 +869,12 @@ def main():
 
     stats = run_evaluation(model, test_stock_info, device, feature_normalizer)
     threshold = stats['top_threshold']
+    
+    visualize_classification(
+        preds=stats['all_preds'],
+        targets=stats['eval_targets'],
+        title=f"模型分类能力可视化 (AUC={stats['auc']:.4f})"
+    )
     
     print()
     while True:

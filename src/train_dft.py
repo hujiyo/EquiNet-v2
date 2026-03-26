@@ -598,7 +598,11 @@ if __name__ == "__main__":
 
     print(f"\n正在加载模型: {args.model}")
     model = create_model().to(device)
-    state_dict = torch.load(args.model, map_location=device)
+    checkpoint = torch.load(args.model, map_location=device)
+    if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    else:
+        state_dict = checkpoint
     model.load_state_dict(state_dict)
 
     total_params = sum(p.numel() for p in model.parameters())

@@ -1603,9 +1603,9 @@ def main():
   python data.py --output ./my_normalizer.pkl              # 指定输出文件路径
         '''
     )
-    parser.add_argument('--output-distribution', type=str, default='normal',choices=['normal', 'uniform'],
-                        help='输出分布类型: normal (标准正态) 或 uniform (均匀分布)，默认 normal')
-    parser.add_argument('--n-quantiles', type=int, default=1000,help='分位数数量（默认1000，越大越精确但越慢）')
+    parser.add_argument('--output-distribution', type=str, default=DataConfig.NORMALIZER_OUTPUT_DISTRIBUTION, choices=['normal', 'uniform'],
+                        help=f'输出分布类型: normal (标准正态) 或 uniform (均匀分布)，默认 {DataConfig.NORMALIZER_OUTPUT_DISTRIBUTION}')
+    parser.add_argument('--n-quantiles', type=int, default=DataConfig.NORMALIZER_N_QUANTILES, help=f'分位数数量（默认{DataConfig.NORMALIZER_N_QUANTILES}，越大越精确但越慢）')
     parser.add_argument('--output', type=str, default=DataConfig.NORMALIZER_PATH,
                         help=f'归一化器输出文件路径，默认 {DataConfig.NORMALIZER_PATH}')
 
