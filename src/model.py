@@ -31,18 +31,21 @@ def init_weights(module):
     当代主流Transformer初始化策略
 
     设计原则：
-    1. Embedding层: Xavier初始化，小增益确保输入方差合理
+    1. Embedding层: 根据层类型和维度计算gain，统一输出std=0.2
     2. FFN第一层: Xavier初始化，gain=1.7补偿GELU压缩
     3. FFN第二层: Xavier初始化，gain=1.0（无激活函数）
     4. 输出层: 小增益，避免sigmoid饱和
     5. LayerNorm: weight=1, bias=0
 
-    各层初始化范围计算（基于当前模型配置）：
-    - Embedding (6→48): gain=0.5 → 范围±0.167, std≈0.096
-    - 位置编码 (30→48): gain=0.7 → 范围±0.168, std≈0.097
-    - FFN第一层 (48→192): gain=1.7 → 范围±0.270, std≈0.155
-    - FFN第二层 (192→48): gain=1.0 → 范围±0.158, std≈0.091
-    - 输出层 (24→1): gain=0.1 → 范围±0.058, std≈0.034, bias=log(p/(1-p))
+    Embedding初始化计算（目标std=0.2）：
+    - Linear层: 输出std = σ_input × gain × sqrt(2×fan_in/(fan_in+fan_out))
+    - Embedding层: 输出std = gain × sqrt(2/(vocab_size+embedding_dim))
+
+    各层gain计算结果：
+    - Stock Token (Linear 6→48): gain=0.42
+    - Market Token (Linear 30→48): gain=0.23
+    - Position (Embedding 31→48): gain=1.26
+    - Segment (Embedding 2→48): gain=1.0
     """
     ffn_hidden_dim = ModelConfig.D_MODEL * ModelConfig.FFN_EXPAND_RATIO
 
@@ -52,12 +55,10 @@ def init_weights(module):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif module.in_features == ModelConfig.INPUT_DIM and module.out_features == ModelConfig.D_MODEL:
-            # stock_token embedding: 使用默认gain
             nn.init.xavier_uniform_(module.weight, gain=ModelConfig.EMBEDDING_INIT_GAIN)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif module.out_features == ModelConfig.D_MODEL and module.in_features != ModelConfig.D_MODEL and module.in_features != ffn_hidden_dim:
-            # market_token embedding: 使用配置文件中定义的专用gain
             nn.init.xavier_uniform_(module.weight, gain=ModelConfig.MARKET_EMBEDDING_INIT_GAIN)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
@@ -76,24 +77,53 @@ def init_weights(module):
     elif isinstance(module, nn.LayerNorm):
         nn.init.ones_(module.weight)
         nn.init.zeros_(module.bias)
+    elif isinstance(module, nn.Embedding):
+        # 区分Position和Segment embedding
+        # Position: vocab_size=CONTEXT_LENGTH+1=31
+        # Segment: vocab_size=TOKEN_TYPE_NUM=2
+        if module.weight.shape[0] == DataConfig.CONTEXT_LENGTH + 1:
+            nn.init.xavier_uniform_(module.weight, gain=ModelConfig.POSITION_EMBEDDING_INIT_GAIN)
+        elif module.weight.shape[0] == DataConfig.TOKEN_TYPE_NUM:
+            nn.init.xavier_uniform_(module.weight, gain=ModelConfig.TOKEN_TYPE_EMBEDDING_INIT_GAIN)
+        else:
+            nn.init.xavier_uniform_(module.weight, gain=1.0)
 
 
-class PositionalEncoding(nn.Module):
+class PositionalAndTypeEncoding(nn.Module):
     """
-    可学习位置编码（Learned Positional Embedding）
-    类似 BERT / GPT 的做法：每个位置对应一个可训练的向量
-    让模型自己学习最优的位置表示，而非使用固定的正弦公式
+    位置编码 + 类型编码（BERT风格）
+    
+    位置编码：所有token都加，表示在序列中的位置
+    类型编码：区分不同类型的token（day token vs market token）
+    
+    参考BERT的实现：
+    - position_embeddings: Embedding(max_position_embeddings, hidden_size)
+    - token_type_embeddings: Embedding(type_vocab_size, hidden_size)
+    - final_embedding = token_embedding + position_embedding + token_type_embedding
     """
     def __init__(self, d_model, seq_len=DataConfig.CONTEXT_LENGTH):
-        super(PositionalEncoding, self).__init__()        
-        # 考虑因子数量，增加位置编码长度
-        self.pe = nn.Embedding(seq_len + DataConfig.FACTOR_NUM, d_model)
+        super(PositionalAndTypeEncoding, self).__init__()
+        # 位置编码：31个位置（30个day token + 1个market token）
+        self.position_embeddings = nn.Embedding(seq_len + 1, d_model)
+        # 类型编码：2个类型（0=day token, 1=market token）
+        self.token_type_embeddings = nn.Embedding(DataConfig.TOKEN_TYPE_NUM, d_model)
 
-    def forward(self, x):
-        #添加位置编码，LayerNorm在后续层中可能使用
+    def forward(self, x, token_type_ids):
+        """
+        Args:
+            x: [batch_size, seq_len, d_model]
+            token_type_ids: [batch_size, seq_len]  # 0=day token, 1=market token
+        
+        Returns:
+            [batch_size, seq_len, d_model] 添加位置编码和类型编码后的embedding
+        """
         seq_len = x.size(1)
         positions = torch.arange(seq_len, device=x.device)
-        return x + self.pe(positions).unsqueeze(0)
+        
+        position_emb = self.position_embeddings(positions).unsqueeze(0)
+        token_type_emb = self.token_type_embeddings(token_type_ids)
+        
+        return x + position_emb + token_type_emb
 
 
 class MultiHeadAttention(nn.Module):
@@ -234,8 +264,8 @@ class StockTransformer(nn.Module):
 
         self.embedding = nn.Linear(input_dim, d_model)
 
-        # 使用标准位置编码
-        self.pos_encoding = PositionalEncoding(d_model, seq_len)
+        # 使用位置编码 + 类型编码（BERT风格）
+        self.pos_encoding = PositionalAndTypeEncoding(d_model, seq_len)
 
         # 统一架构：所有层都使用 Attention + FFN
         self.layers = nn.ModuleList([
@@ -266,10 +296,6 @@ class StockTransformer(nn.Module):
         self.apply(init_weights)
 
     def forward(self, x, market_seq):
-        # x: [batch_size, seq_len, 6] (OHLC + volume + exchange)
-
-        # 1. 统一Embedding：6个特征一起映射到d_model维
-
         """
         Args:
             x: [batch_size, seq_len, 6] (OHLC + volume + exchange)
@@ -278,23 +304,31 @@ class StockTransformer(nn.Module):
         Returns:
             output: [batch_size, 1] 预测logits
         """
+        # 1. Embedding
         x = self.embedding(x)  # [batch_size, seq_len, d_model]
-
-        market_token = self.market_encoder(market_seq)
-        x = torch.cat([x, market_token], dim=1)
-        # 2. 位置编码
-        x = self.pos_encoding(x)
+        market_token = self.market_encoder(market_seq)  # [batch_size, 1, d_model]
+        x = torch.cat([x, market_token], dim=1)  # [batch_size, seq_len+1, d_model]
+        
+        # 2. 创建token_type_ids：区分day token和market token
+        # token_type_ids: [batch_size, seq_len+1]
+        # 0 = day token (前seq_len个)
+        # 1 = market token (最后1个)
+        token_type_ids = torch.zeros(x.size(0), x.size(1), dtype=torch.long, device=x.device)
+        token_type_ids[:, -1] = 1  # 最后一个token是market token
+        
+        # 3. 位置编码 + 类型编码
+        x = self.pos_encoding(x, token_type_ids)
         x = self.dropout(x)
 
-        # 3. Transformer层（Pre-Norm架构）
+        # 4. Transformer层（Pre-Norm架构）
         for layer in self.layers:
             x = layer(x)
 
-        # 4. Pre-Norm架构需要在最后进行归一化
+        # 5. Pre-Norm架构需要在最后进行归一化
         #    因为每层的输出没有经过归一化
         x = self.final_norm(x)
 
-        # 5. 多头注意力聚合
+        # 6. 多头注意力聚合
         aggregated = self.attention_pooling(x)  # [batch_size, d_model]
 
         output = self.output_projection(aggregated)  # [batch_size, output_dim]

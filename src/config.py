@@ -25,6 +25,7 @@ class DataConfig:
     REQUIRED_LENGTH = CONTEXT_LENGTH + FUTURE_DAYS  # 每样本总需求长度
 
     FACTOR_NUM = 1                   # 因子数量,目前只有market因子
+    TOKEN_TYPE_NUM = 2               # token类型数量（0=day token, 1=market token）
 
     # 采样策略配置
     # 'temporal': 时间顺序采样（指针在训练集上循环滑动）
@@ -39,9 +40,9 @@ class DataConfig:
     # 评估参数
     EVAL_BATCH_SIZE = 256            # 评估批处理大小（分批处理，减少显存占用）
 
-    MARKET_DATA_FILE = '000000.csv'
+    MARKET_DATA_FILE = '000000.csv'  # src/data/000000.csv
     MARKET_CODE = 'sh.000001'
-    MARKET_CONTEXT_LENGTH = 10
+    MARKET_CONTEXT_LENGTH = CONTEXT_LENGTH
 
     # ========== 特征归一化配置 ==========
     # 使用 QuantileTransformer + StandardScaler 进行高级特征归一化
@@ -78,13 +79,23 @@ class ModelConfig:
 
     MARKET_TOKEN_TYPE_ID = INPUT_DIM
 
-    # ========== Embedding Linear层参数初始化配置 ==========
-    # - gain=1.0: 标准Xavier/Kaiming (std≈0.29), 稳定
-    # - gain=0.5: 主流认为适合小模型和低SNR任务
-    # - gain=1.5: 放大数值差异，主流认为可能放大噪声和信号导致训练不稳定
-    # W ~ U[-gain*√(6/(fan_in+fan_out)), +gain*√(6/(fan_in+fan_out))]
-    EMBEDDING_INIT_GAIN = 1.5         # Embedding层初始化增益（stock_token专用）
-    MARKET_EMBEDDING_INIT_GAIN = 1.2  # Market Token Embedding层初始化增益（market_token专用）
+    # ========== Embedding 参数初始化配置 ==========
+    # 目标：让四类embedding的输出std统一为0.2，确保训练初期信息势均力敌
+    #
+    # Linear层计算公式：输出std = σ_input × gain × sqrt(2×fan_in/(fan_in+fan_out))
+    # Embedding层计算公式：输出std = gain × sqrt(2/(vocab_size+embedding_dim))
+    #
+    # 假设：输入数据经过QuantileTransformer+StandardScaler归一化后std≈1.0
+    #
+    # 计算过程：
+    # - Stock Token (Linear 6→48): gain = 0.2 / sqrt(12/54) ≈ 0.42
+    # - Market Token (Linear 30→48): gain = 0.2 / sqrt(60/78) ≈ 0.23
+    # - Position (Embedding 31→48): gain = 0.2 / sqrt(2/79) ≈ 1.26
+    # - Segment (Embedding 2→48): gain = 0.2 / sqrt(2/50) = 1.0
+    EMBEDDING_INIT_GAIN = 0.42           # Stock Token embedding (Linear 6→48)
+    MARKET_EMBEDDING_INIT_GAIN = 0.23    # Market Token embedding (Linear 30→48)
+    POSITION_EMBEDDING_INIT_GAIN = 1.26  # Position embedding (Embedding 31→48)
+    TOKEN_TYPE_EMBEDDING_INIT_GAIN = 1.0 # Segment embedding (Embedding 2→48)
 
     # FFN层初始化配置
     # - GELU在x~N(0,1)附近的有效增益约为0.588，需要补偿：gain ≈ 1/0.588 ≈ 1.7
