@@ -78,13 +78,21 @@ class ModelConfig:
 
     MARKET_TOKEN_TYPE_ID = INPUT_DIM
 
-    # ========== Embedding Linear层参数初始化配置 ==========
-    # - gain=1.0: 标准Xavier/Kaiming (std≈0.29), 稳定
-    # - gain=0.5: 主流认为适合小模型和低SNR任务
-    # - gain=1.5: 放大数值差异，主流认为可能放大噪声和信号导致训练不稳定
-    # W ~ U[-gain*√(6/(fan_in+fan_out)), +gain*√(6/(fan_in+fan_out))]
-    EMBEDDING_INIT_GAIN = 1.5         # Embedding层初始化增益（stock_token专用）
-    MARKET_EMBEDDING_INIT_GAIN = 1.2  # Market Token Embedding层初始化增益（market_token专用）
+    # ========== Embedding 参数初始化配置 ==========
+    # 目标：让三类embedding的输出std统一为0.2，确保训练初期信息势均力敌
+    #
+    # Linear层: std = σ_input × gain × sqrt(2×fan_in/(fan_in+fan_out))
+    # Embedding层: std = gain × sqrt(2/(fan_in+fan_out))  [fan_in=dim, fan_out=vocab_size]
+    #
+    # 假设：输入数据经归一化后std≈1.0
+    #
+    # 计算过程：
+    # - Stock Token (Linear 6→48): gain = 0.2 / sqrt(12/54) ≈ 0.42
+    # - Market Token (Linear 10→48): gain = 0.2 / sqrt(20/58) ≈ 0.34
+    # - Position (Embedding 31→48): gain = 0.2 / sqrt(2/79) ≈ 1.26
+    EMBEDDING_INIT_GAIN = 0.42           # Stock Token embedding (Linear 6→48)
+    MARKET_EMBEDDING_INIT_GAIN = 0.34    # Market Token embedding (Linear 10→48)
+    POSITION_EMBEDDING_INIT_GAIN = 1.26  # Position embedding (Embedding 31→48)
 
     # FFN层初始化配置
     # - GELU在x~N(0,1)附近的有效增益约为0.588，需要补偿：gain ≈ 1/0.588 ≈ 1.7
